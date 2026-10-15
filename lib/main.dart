@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'screens/calendar_screen.dart';
 import 'screens/situation_screen.dart';
 
 void main() {
@@ -30,17 +31,14 @@ class MainTabScreen extends StatefulWidget {
 }
 
 class _MainTabScreenState extends State<MainTabScreen> {
-  int _currentIndex = 1;
-
-  final List<Widget> _pages = [
-    const Center(child: Text('다음 단계에서 구현할 001 캘린더 화면입니다.')),
-    const SituationScreen(),
-  ];
+  int _currentIndex = 0;
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: _pages[_currentIndex],
+      body: _currentIndex == 0
+          ? const CalendarScreen()
+          : const SituationScreen(),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _currentIndex,
         onDestinationSelected: (index) {
