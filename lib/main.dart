@@ -22,7 +22,7 @@ class BygoApp extends StatelessWidget {
       valueListenable: themeNotifier,
       builder: (context, currentMode, _) {
         return MaterialApp(
-          title: 'Project Bygo',
+          title: 'Here It is',
           debugShowCheckedModeBanner: false,
           themeMode: currentMode,
           theme: ThemeData(

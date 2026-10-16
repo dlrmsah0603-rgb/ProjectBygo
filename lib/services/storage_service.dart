@@ -56,7 +56,6 @@ class StorageService {
     await prefs.setBool(_darkModeKey, isDark);
   }
 
-  // JSON 데이터 생성
   static Future<String> exportBackupJson() async {
     final situations = await loadSituations();
     final schedules = await loadSchedules();
@@ -69,7 +68,6 @@ class StorageService {
     return const JsonEncoder.withIndent('  ').convert(backupData);
   }
 
-  // JSON 데이터 파싱 및 저장
   static Future<void> importBackupJson(String jsonString) async {
     final Map<String, dynamic> data =
         jsonDecode(jsonString) as Map<String, dynamic>;
@@ -98,20 +96,18 @@ class StorageService {
         '${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}';
     final defaultFileName = 'project_bygo_backup_$dateStamp.json';
 
-    // FilePicker를 사용하여 사용자가 파일을 저장할 위치를 선택하도록 함
-    final String? outputFile = await FilePicker.platform.saveFile(
+    final String? outputFile = await FilePicker.saveFile(
       dialogTitle: '백업 JSON 파일 저장 위치 선택',
       fileName: defaultFileName,
       type: FileType.custom,
       allowedExtensions: ['json'],
-      bytes: bytes, // Android / iOS 대응
+      bytes: bytes,
     );
 
     if (outputFile == null) {
-      return null; // 사용자가 취소함
+      return null;
     }
 
-    // Windows / macOS / Linux 데스크톱 환경에서는 직접 파일 기록
     if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
       final file = File(outputFile);
       await file.writeAsBytes(bytes);
@@ -122,7 +118,7 @@ class StorageService {
 
   // [복원] 기기에서 JSON 파일을 선택해 업로드(불러오기)
   static Future<bool> importBackupFromFile() async {
-    final FilePickerResult? result = await FilePicker.platform.pickFiles(
+    final FilePickerResult? result = await FilePicker.pickFiles(
       dialogTitle: '복원할 백업 JSON 파일 선택',
       type: FileType.custom,
       allowedExtensions: ['json'],
@@ -130,7 +126,7 @@ class StorageService {
     );
 
     if (result == null || result.files.isEmpty) {
-      return false; // 사용자가 취소함
+      return false;
     }
 
     final pickedFile = result.files.single;
