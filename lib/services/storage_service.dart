@@ -1,4 +1,6 @@
 import 'dart:convert';
+import 'dart:io';
+import 'package:file_picker/file_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/situation_model.dart';
 import '../models/schedule_model.dart';
@@ -6,62 +8,144 @@ import '../models/schedule_model.dart';
 class StorageService {
   static const String _situationsKey = 'situations_data';
   static const String _schedulesKey = 'schedules_data';
+  static const String _darkModeKey = 'dark_mode_enabled';
 
   static Future<List<Situation>> loadSituations() async {
     final prefs = await SharedPreferences.getInstance();
-    final String? data = prefs.getString(_situationsKey);
-
-    if (data == null) {
-      final defaultList = [
-        Situation(
-          id: 'sit_1',
-          title: '출근',
-          tag: '출근',
-          items: [
-            PackingItem(id: 'item_1', name: '사원증'),
-            PackingItem(id: 'item_2', name: '노트북 및 충전기'),
-            PackingItem(id: 'item_3', name: '지갑 / 교통카드'),
-          ],
-        ),
-        Situation(
-          id: 'sit_2',
-          title: '운동',
-          tag: '운동',
-          items: [
-            PackingItem(id: 'item_4', name: '텀블러'),
-            PackingItem(id: 'item_5', name: '실내 운동화'),
-            PackingItem(id: 'item_6', name: '스트랩'),
-          ],
-        ),
-      ];
-      await saveSituations(defaultList);
-      return defaultList;
+    final jsonString = prefs.getString(_situationsKey);
+    if (jsonString == null || jsonString.isEmpty) {
+      return [];
     }
-
-    final List<dynamic> decoded = jsonDecode(data);
-    return decoded.map((e) => Situation.fromJson(e)).toList();
+    final List<dynamic> decoded = jsonDecode(jsonString);
+    return decoded
+        .map((item) => Situation.fromJson(item as Map<String, dynamic>))
+        .toList();
   }
 
   static Future<void> saveSituations(List<Situation> situations) async {
     final prefs = await SharedPreferences.getInstance();
-    final String encoded =
-        jsonEncode(situations.map((e) => e.toJson()).toList());
+    final encoded = jsonEncode(situations.map((s) => s.toJson()).toList());
     await prefs.setString(_situationsKey, encoded);
   }
 
   static Future<List<Schedule>> loadSchedules() async {
     final prefs = await SharedPreferences.getInstance();
-    final String? data = prefs.getString(_schedulesKey);
-    if (data == null) return [];
-
-    final List<dynamic> decoded = jsonDecode(data);
-    return decoded.map((e) => Schedule.fromJson(e)).toList();
+    final jsonString = prefs.getString(_schedulesKey);
+    if (jsonString == null || jsonString.isEmpty) {
+      return [];
+    }
+    final List<dynamic> decoded = jsonDecode(jsonString);
+    return decoded
+        .map((item) => Schedule.fromJson(item as Map<String, dynamic>))
+        .toList();
   }
 
   static Future<void> saveSchedules(List<Schedule> schedules) async {
     final prefs = await SharedPreferences.getInstance();
-    final String encoded =
-        jsonEncode(schedules.map((e) => e.toJson()).toList());
+    final encoded = jsonEncode(schedules.map((s) => s.toJson()).toList());
     await prefs.setString(_schedulesKey, encoded);
+  }
+
+  static Future<bool> loadIsDarkMode() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_darkModeKey) ?? false;
+  }
+
+  static Future<void> saveIsDarkMode(bool isDark) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_darkModeKey, isDark);
+  }
+
+  // JSON 데이터 생성
+  static Future<String> exportBackupJson() async {
+    final situations = await loadSituations();
+    final schedules = await loadSchedules();
+    final backupData = {
+      'version': 1,
+      'exportedAt': DateTime.now().toIso8601String(),
+      'situations': situations.map((s) => s.toJson()).toList(),
+      'schedules': schedules.map((sc) => sc.toJson()).toList(),
+    };
+    return const JsonEncoder.withIndent('  ').convert(backupData);
+  }
+
+  // JSON 데이터 파싱 및 저장
+  static Future<void> importBackupJson(String jsonString) async {
+    final Map<String, dynamic> data =
+        jsonDecode(jsonString) as Map<String, dynamic>;
+
+    if (!data.containsKey('situations') && !data.containsKey('schedules')) {
+      throw const FormatException('유효한 백업 파일 형식이 아닙니다.');
+    }
+
+    final situationsList = (data['situations'] as List<dynamic>? ?? [])
+        .map((item) => Situation.fromJson(item as Map<String, dynamic>))
+        .toList();
+    final schedulesList = (data['schedules'] as List<dynamic>? ?? [])
+        .map((item) => Schedule.fromJson(item as Map<String, dynamic>))
+        .toList();
+
+    await saveSituations(situationsList);
+    await saveSchedules(schedulesList);
+  }
+
+  // [백업] JSON 파일로 기기에 다운로드(저장)
+  static Future<String?> exportBackupToFile() async {
+    final jsonString = await exportBackupJson();
+    final bytes = utf8.encode(jsonString);
+    final now = DateTime.now();
+    final dateStamp =
+        '${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}';
+    final defaultFileName = 'project_bygo_backup_$dateStamp.json';
+
+    // FilePicker를 사용하여 사용자가 파일을 저장할 위치를 선택하도록 함
+    final String? outputFile = await FilePicker.platform.saveFile(
+      dialogTitle: '백업 JSON 파일 저장 위치 선택',
+      fileName: defaultFileName,
+      type: FileType.custom,
+      allowedExtensions: ['json'],
+      bytes: bytes, // Android / iOS 대응
+    );
+
+    if (outputFile == null) {
+      return null; // 사용자가 취소함
+    }
+
+    // Windows / macOS / Linux 데스크톱 환경에서는 직접 파일 기록
+    if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
+      final file = File(outputFile);
+      await file.writeAsBytes(bytes);
+    }
+
+    return outputFile;
+  }
+
+  // [복원] 기기에서 JSON 파일을 선택해 업로드(불러오기)
+  static Future<bool> importBackupFromFile() async {
+    final FilePickerResult? result = await FilePicker.platform.pickFiles(
+      dialogTitle: '복원할 백업 JSON 파일 선택',
+      type: FileType.custom,
+      allowedExtensions: ['json'],
+      withData: true,
+    );
+
+    if (result == null || result.files.isEmpty) {
+      return false; // 사용자가 취소함
+    }
+
+    final pickedFile = result.files.single;
+    String jsonString;
+
+    if (pickedFile.path != null) {
+      final file = File(pickedFile.path!);
+      jsonString = await file.readAsString(encoding: utf8);
+    } else if (pickedFile.bytes != null) {
+      jsonString = utf8.decode(pickedFile.bytes!);
+    } else {
+      throw Exception('파일을 읽을 수 없습니다.');
+    }
+
+    await importBackupJson(jsonString);
+    return true;
   }
 }
