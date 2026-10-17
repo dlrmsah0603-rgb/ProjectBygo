@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/situation_model.dart';
 import '../models/schedule_model.dart';
@@ -9,6 +10,8 @@ class StorageService {
   static const String _situationsKey = 'situations_data';
   static const String _schedulesKey = 'schedules_data';
   static const String _darkModeKey = 'dark_mode_enabled';
+  static const String _themeColorKey = 'theme_color_value';
+  static const String _showTipsKey = 'show_tips_enabled';
 
   static Future<List<Situation>> loadSituations() async {
     final prefs = await SharedPreferences.getInstance();
@@ -56,6 +59,26 @@ class StorageService {
     await prefs.setBool(_darkModeKey, isDark);
   }
 
+  static Future<int> loadThemeColor() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getInt(_themeColorKey) ?? Colors.indigo.toARGB32();
+  }
+
+  static Future<void> saveThemeColor(int colorValue) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_themeColorKey, colorValue);
+  }
+
+  static Future<bool> loadShowTips() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_showTipsKey) ?? true;
+  }
+
+  static Future<void> saveShowTips(bool showTips) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_showTipsKey, showTips);
+  }
+
   static Future<String> exportBackupJson() async {
     final situations = await loadSituations();
     final schedules = await loadSchedules();
@@ -87,14 +110,13 @@ class StorageService {
     await saveSchedules(schedulesList);
   }
 
-  // [백업] JSON 파일로 기기에 다운로드(저장)
   static Future<String?> exportBackupToFile() async {
     final jsonString = await exportBackupJson();
     final bytes = utf8.encode(jsonString);
     final now = DateTime.now();
     final dateStamp =
         '${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}';
-    final defaultFileName = 'project_bygo_backup_$dateStamp.json';
+    final defaultFileName = 'bygo_backup_$dateStamp.json';
 
     final String? outputFile = await FilePicker.platform.saveFile(
       dialogTitle: '백업 JSON 파일 저장 위치 선택',
@@ -116,7 +138,6 @@ class StorageService {
     return outputFile;
   }
 
-  // [복원] 기기에서 JSON 파일을 선택해 업로드(불러오기)
   static Future<bool> importBackupFromFile() async {
     final FilePickerResult? result = await FilePicker.platform.pickFiles(
       dialogTitle: '복원할 백업 JSON 파일 선택',

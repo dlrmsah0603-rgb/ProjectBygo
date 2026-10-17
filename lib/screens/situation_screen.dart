@@ -5,11 +5,13 @@ import '../models/situation_model.dart';
 class SituationScreen extends StatefulWidget {
   final List<Situation> situations;
   final ValueChanged<List<Situation>> onSituationsChanged;
+  final bool showTips;
 
   const SituationScreen({
     super.key,
     required this.situations,
     required this.onSituationsChanged,
+    this.showTips = true,
   });
 
   @override
@@ -319,26 +321,27 @@ class _SituationScreenState extends State<SituationScreen> {
     return Scaffold(
       body: Column(
         children: [
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            color: Theme.of(context)
-                .colorScheme
-                .surfaceContainerHighest
-                .withValues(alpha: 0.5),
-            child: const Row(
-              children: [
-                Icon(Icons.swipe, size: 16),
-                SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    '팁: 오른쪽으로 밀면 체크, 왼쪽으로 밀면 삭제, 우측 ≡를 끌면 순서가 바뀝니다.',
-                    style: TextStyle(fontSize: 12),
+          if (widget.showTips)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              color: Theme.of(context)
+                  .colorScheme
+                  .surfaceContainerHighest
+                  .withValues(alpha: 0.5),
+              child: const Row(
+                children: [
+                  Icon(Icons.swipe, size: 16),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '팁: 오른쪽으로 밀면 체크, 왼쪽으로 밀면 삭제, 우측 ≡를 끌면 순서가 바뀝니다.',
+                      style: TextStyle(fontSize: 12),
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
           Expanded(
             child: widget.situations.isEmpty
                 ? Center(
@@ -543,7 +546,6 @@ class _SituationScreenState extends State<SituationScreen> {
                                       HapticFeedback.selectionClick(),
                                   onReorderItem: (oldIndex, newIndex) {
                                     HapticFeedback.mediumImpact();
-                                    if (newIndex > oldIndex) newIndex -= 1;
                                     final moved =
                                         situation.items.removeAt(oldIndex);
                                     situation.items.insert(newIndex, moved);

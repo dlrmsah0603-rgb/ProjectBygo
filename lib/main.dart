@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'models/schedule_model.dart';
 import 'models/situation_model.dart';
 import 'screens/calendar_screen.dart';
+import 'screens/settings_screen.dart';
 import 'screens/situation_screen.dart';
 import 'services/storage_service.dart';
 
@@ -20,6 +21,8 @@ class BygoApp extends StatefulWidget {
 
 class _BygoAppState extends State<BygoApp> {
   bool _isDarkMode = false;
+  int _themeColorValue = Colors.indigo.toARGB32();
+  bool _showTips = true;
   int _currentIndex = 0;
   List<Situation> _situations = [];
   List<Schedule> _schedules = [];
@@ -77,6 +80,8 @@ class _BygoAppState extends State<BygoApp> {
 
   Future<void> _loadInitialData() async {
     final isDark = await StorageService.loadIsDarkMode();
+    final themeColor = await StorageService.loadThemeColor();
+    final showTips = await StorageService.loadShowTips();
     var situations = await StorageService.loadSituations();
     final schedules = await StorageService.loadSchedules();
 
@@ -88,17 +93,27 @@ class _BygoAppState extends State<BygoApp> {
     if (!mounted) return;
     setState(() {
       _isDarkMode = isDark;
+      _themeColorValue = themeColor;
+      _showTips = showTips;
       _situations = situations;
       _schedules = schedules;
       _isLoading = false;
     });
   }
 
-  Future<void> _toggleDarkMode() async {
-    HapticFeedback.selectionClick();
-    final nextMode = !_isDarkMode;
-    setState(() => _isDarkMode = nextMode);
-    await StorageService.saveIsDarkMode(nextMode);
+  Future<void> _updateDarkMode(bool isDark) async {
+    setState(() => _isDarkMode = isDark);
+    await StorageService.saveIsDarkMode(isDark);
+  }
+
+  Future<void> _updateThemeColor(int colorValue) async {
+    setState(() => _themeColorValue = colorValue);
+    await StorageService.saveThemeColor(colorValue);
+  }
+
+  Future<void> _updateShowTips(bool showTips) async {
+    setState(() => _showTips = showTips);
+    await StorageService.saveShowTips(showTips);
   }
 
   Future<void> _handleExportBackup(BuildContext context) async {
@@ -138,17 +153,19 @@ class _BygoAppState extends State<BygoApp> {
 
   @override
   Widget build(BuildContext context) {
+    final seedColor = Color(_themeColorValue);
+
     return MaterialApp(
-      title: 'Project Bygo',
+      title: 'Bygo',
       debugShowCheckedModeBanner: false,
       themeMode: _isDarkMode ? ThemeMode.dark : ThemeMode.light,
       theme: ThemeData(
-        colorSchemeSeed: Colors.indigo,
+        colorSchemeSeed: seedColor,
         useMaterial3: true,
         brightness: Brightness.light,
       ),
       darkTheme: ThemeData(
-        colorSchemeSeed: Colors.indigo,
+        colorSchemeSeed: seedColor,
         useMaterial3: true,
         brightness: Brightness.dark,
       ),
@@ -156,28 +173,20 @@ class _BygoAppState extends State<BygoApp> {
         builder: (innerContext) {
           return Scaffold(
             appBar: AppBar(
-              title: const Text( //title
-                'Project Bygo',
+              title: const Text(
+                'Bygo',
                 style: TextStyle(fontWeight: FontWeight.bold),
               ),
               actions: [
-                IconButton(
-                  tooltip: '백업 파일 저장 (.json)',
-                  icon: const Icon(Icons.download_outlined),
-                  onPressed: () => _handleExportBackup(innerContext),
-                ),
-                IconButton(
-                  tooltip: '백업 파일 불러오기 (.json)',
-                  icon: const Icon(Icons.upload_file_outlined),
-                  onPressed: () => _handleImportBackup(innerContext),
-                ),
-                IconButton(
-                  tooltip: _isDarkMode ? '라이트 모드로 전환' : '다크 모드로 전환',
-                  icon: Icon(
-                    _isDarkMode ? Icons.light_mode : Icons.dark_mode,
+                if (_currentIndex != 2)
+                  IconButton(
+                    tooltip: '설정 열기',
+                    icon: const Icon(Icons.settings_outlined),
+                    onPressed: () {
+                      HapticFeedback.selectionClick();
+                      setState(() => _currentIndex = 2);
+                    },
                   ),
-                  onPressed: _toggleDarkMode,
-                ),
               ],
             ),
             body: _isLoading
@@ -188,6 +197,7 @@ class _BygoAppState extends State<BygoApp> {
                       CalendarScreen(
                         schedules: _schedules,
                         situations: _situations,
+                        showTips: _showTips,
                         onSchedulesChanged: (updated) {
                           setState(() => _schedules = updated);
                           StorageService.saveSchedules(updated);
@@ -199,10 +209,21 @@ class _BygoAppState extends State<BygoApp> {
                       ),
                       SituationScreen(
                         situations: _situations,
+                        showTips: _showTips,
                         onSituationsChanged: (updated) {
                           setState(() => _situations = updated);
                           StorageService.saveSituations(updated);
                         },
+                      ),
+                      SettingsScreen(
+                        isDarkMode: _isDarkMode,
+                        onDarkModeChanged: _updateDarkMode,
+                        themeColorValue: _themeColorValue,
+                        onThemeColorChanged: _updateThemeColor,
+                        showTips: _showTips,
+                        onShowTipsChanged: _updateShowTips,
+                        onExportBackup: () => _handleExportBackup(innerContext),
+                        onImportBackup: () => _handleImportBackup(innerContext),
                       ),
                     ],
                   ),
@@ -222,6 +243,11 @@ class _BygoAppState extends State<BygoApp> {
                   icon: Icon(Icons.backpack_outlined),
                   selectedIcon: Icon(Icons.backpack),
                   label: '상황·소지품',
+                ),
+                NavigationDestination(
+                  icon: Icon(Icons.settings_outlined),
+                  selectedIcon: Icon(Icons.settings),
+                  label: '설정',
                 ),
               ],
             ),

@@ -9,6 +9,7 @@ class CalendarScreen extends StatefulWidget {
   final List<Situation> situations;
   final ValueChanged<List<Schedule>> onSchedulesChanged;
   final ValueChanged<List<Situation>> onSituationsChanged;
+  final bool showTips;
 
   const CalendarScreen({
     super.key,
@@ -16,6 +17,7 @@ class CalendarScreen extends StatefulWidget {
     required this.situations,
     required this.onSchedulesChanged,
     required this.onSituationsChanged,
+    this.showTips = true,
   });
 
   @override
@@ -422,7 +424,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                     HapticFeedback.selectionClick(),
                                 onReorderItem: (oldIndex, newIndex) {
                                   HapticFeedback.mediumImpact();
-                                  if (newIndex > oldIndex) newIndex -= 1;
                                   final moved =
                                       situation.items.removeAt(oldIndex);
                                   situation.items.insert(newIndex, moved);
@@ -596,26 +597,30 @@ class _CalendarScreenState extends State<CalendarScreen> {
                     ),
             )
           else ...[
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
-              child: Row(
-                children: [
-                  Icon(
-                    Icons.touch_app,
-                    size: 14,
-                    color: Colors.grey.shade600,
-                  ),
-                  const SizedBox(width: 4),
-                  Text(
-                    '달력의 날짜를 길게 누르면(Long Press) 해당 날짜에 일정을 바로 추가합니다.',
-                    style: TextStyle(
-                      fontSize: 11,
+            if (widget.showTips)
+              Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.touch_app,
+                      size: 14,
                       color: Colors.grey.shade600,
                     ),
-                  ),
-                ],
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(
+                        '팁: 날짜를 길게 누르면(Long Press) 해당 날짜에 일정을 바로 추가합니다.',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: Colors.grey.shade600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            ),
             TableCalendar<Schedule>(
               firstDay: DateTime.utc(2020, 1, 1),
               lastDay: DateTime.utc(2035, 12, 31),
@@ -624,10 +629,9 @@ class _CalendarScreenState extends State<CalendarScreen> {
               selectedDayPredicate: (day) => isSameDay(_selectedDay, day),
               eventLoader: _getSchedulesForDay,
               rowHeight: 64,
-
               headerStyle: const HeaderStyle(
                 titleCentered: true,
-                formatButtonShowsNext: false, // 👈 핵심: 다음 선택지가 아닌 '현재 선택지'를 표시
+                formatButtonShowsNext: false,
                 formatButtonDecoration: BoxDecoration(
                   border: Border.fromBorderSide(BorderSide(color: Colors.grey)),
                   borderRadius: BorderRadius.all(Radius.circular(12.0)),
@@ -642,7 +646,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
                 CalendarFormat.twoWeeks: '2주',
                 CalendarFormat.week: '주간',
               },
-              
               onDaySelected: (selectedDay, focusedDay) {
                 HapticFeedback.selectionClick();
                 setState(() {
