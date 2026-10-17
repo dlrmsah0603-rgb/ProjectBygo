@@ -24,6 +24,8 @@ class _BygoAppState extends State<BygoApp> {
   int _themeColorValue = Colors.indigo.toARGB32();
   bool _showTips = true;
   int _currentIndex = 0;
+  late final PageController _pageController;
+
   List<Situation> _situations = [];
   List<Schedule> _schedules = [];
   bool _isLoading = true;
@@ -31,7 +33,14 @@ class _BygoAppState extends State<BygoApp> {
   @override
   void initState() {
     super.initState();
+    _pageController = PageController(initialPage: _currentIndex);
     _loadInitialData();
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
   }
 
   List<Situation> _createDefaultPresets() {
@@ -99,6 +108,19 @@ class _BygoAppState extends State<BygoApp> {
       _schedules = schedules;
       _isLoading = false;
     });
+  }
+
+  void _navigateToTab(int index) {
+    if (_currentIndex == index) return;
+    HapticFeedback.selectionClick();
+    setState(() => _currentIndex = index);
+    if (_pageController.hasClients) {
+      _pageController.animateToPage(
+        index,
+        duration: const Duration(milliseconds: 280),
+        curve: Curves.easeOutCubic,
+      );
+    }
   }
 
   Future<void> _updateDarkMode(bool isDark) async {
@@ -182,17 +204,20 @@ class _BygoAppState extends State<BygoApp> {
                   IconButton(
                     tooltip: '설정 열기',
                     icon: const Icon(Icons.settings_outlined),
-                    onPressed: () {
-                      HapticFeedback.selectionClick();
-                      setState(() => _currentIndex = 2);
-                    },
+                    onPressed: () => _navigateToTab(2),
                   ),
               ],
             ),
             body: _isLoading
                 ? const Center(child: CircularProgressIndicator())
-                : IndexedStack(
-                    index: _currentIndex,
+                : PageView(
+                    controller: _pageController,
+                    onPageChanged: (index) {
+                      if (_currentIndex != index) {
+                        HapticFeedback.selectionClick();
+                        setState(() => _currentIndex = index);
+                      }
+                    },
                     children: [
                       CalendarScreen(
                         schedules: _schedules,
@@ -229,10 +254,7 @@ class _BygoAppState extends State<BygoApp> {
                   ),
             bottomNavigationBar: NavigationBar(
               selectedIndex: _currentIndex,
-              onDestinationSelected: (idx) {
-                HapticFeedback.selectionClick();
-                setState(() => _currentIndex = idx);
-              },
+              onDestinationSelected: _navigateToTab,
               destinations: const [
                 NavigationDestination(
                   icon: Icon(Icons.calendar_month_outlined),
