@@ -1,223 +1,311 @@
 import 'package:flutter/material.dart';
-import '../main.dart';
+import 'package:flutter/services.dart';
 import '../models/situation_model.dart';
-import '../services/storage_service.dart';
 
 class SituationScreen extends StatefulWidget {
-  const SituationScreen({super.key});
+  final List<Situation> situations;
+  final ValueChanged<List<Situation>> onSituationsChanged;
+
+  const SituationScreen({
+    super.key,
+    required this.situations,
+    required this.onSituationsChanged,
+  });
 
   @override
   State<SituationScreen> createState() => _SituationScreenState();
 }
 
 class _SituationScreenState extends State<SituationScreen> {
-  List<Situation> _situations = [];
-  int _selectedIndex = 0;
+  static const List<IconData> _availableIcons = [
+    Icons.work,
+    Icons.fitness_center,
+    Icons.flight_takeoff,
+    Icons.school,
+    Icons.shopping_bag,
+    Icons.coffee,
+    Icons.hiking,
+    Icons.medical_services,
+    Icons.celebration,
+    Icons.directions_car,
+  ];
 
-  bool _isSearching = false;
-  final TextEditingController _searchController = TextEditingController();
-  String _searchKeyword = '';
+  static const List<Color> _availableColors = [
+    Colors.blue,
+    Colors.green,
+    Colors.orange,
+    Colors.purple,
+    Colors.red,
+    Colors.teal,
+    Colors.indigo,
+    Colors.pink,
+  ];
 
-  @override
-  void initState() {
-    super.initState();
-    _loadData();
-  }
-
-  Future<void> _loadData() async {
-    final loaded = await StorageService.loadSituations();
-    if (!mounted) return;
-    setState(() {
-      _situations = loaded;
-      if (_selectedIndex >= _situations.length) {
-        _selectedIndex = 0;
-      }
-    });
-  }
-
-  Future<void> _saveAndRefresh() async {
-    await StorageService.saveSituations(_situations);
-    if (!mounted) return;
+  void _notifyParent() {
     setState(() {});
+    widget.onSituationsChanged(widget.situations);
   }
 
-  List<Situation> get _filteredSituations {
-    if (_searchKeyword.isEmpty) return _situations;
-    final keyword = _searchKeyword.toLowerCase();
-    return _situations.where((sit) {
-      final matchTitle = sit.title.toLowerCase().contains(keyword);
-      final matchTag = sit.tag.toLowerCase().contains(keyword);
-      final matchItem = sit.items.any((i) => i.name.toLowerCase().contains(keyword));
-      return matchTitle || matchTag || matchItem;
-    }).toList();
+  void _toggleAllItems(Situation situation) {
+    final targetState = !situation.isAllChecked;
+    if (targetState) {
+      HapticFeedback.heavyImpact();
+    } else {
+      HapticFeedback.mediumImpact();
+    }
+    for (final item in situation.items) {
+      item.isChecked = targetState;
+    }
+    _notifyParent();
   }
 
-  void _showSituationDialog({Situation? existingSituation}) {
-    final titleController = TextEditingController(text: existingSituation?.title ?? '');
-    final tagController = TextEditingController(text: existingSituation?.tag ?? '');
-    int selectedIconIdx = existingSituation?.iconIndex ?? 0;
-    int selectedColorVal = existingSituation?.colorValue ?? Situation.presetColors[0].toARGB32();
+  void _toggleSingleItem(Situation situation, ChecklistItem item) {
+    item.isChecked = !item.isChecked;
+    if (situation.isAllChecked) {
+      HapticFeedback.heavyImpact();
+    } else {
+      HapticFeedback.lightImpact();
+    }
+    _notifyParent();
+  }
+
+  void _deleteChecklistItem(Situation situation, int index) {
+    final removedItem = situation.items.removeAt(index);
+    HapticFeedback.mediumImpact();
+    _notifyParent();
+
+    ScaffoldMessenger.of(context).clearSnackBars();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text("'${removedItem.name}' 소지품이 삭제되었습니다."),
+        behavior: SnackBarBehavior.floating,
+        action: SnackBarAction(
+          label: '실행 취소',
+          onPressed: () {
+            HapticFeedback.lightImpact();
+            final insertIndex = index.clamp(0, situation.items.length);
+            situation.items.insert(insertIndex, removedItem);
+            _notifyParent();
+          },
+        ),
+      ),
+    );
+  }
+
+  void _showSituationDialog({Situation? existing}) {
+    HapticFeedback.selectionClick();
+    final nameController = TextEditingController(text: existing?.name ?? '');
+    final tagController = TextEditingController(text: existing?.tag ?? '');
+    int selectedIconCode = existing?.iconCodePoint ?? Icons.work.codePoint;
+    int selectedColorValue =
+        existing?.colorValue ?? Colors.blue.toARGB32();
 
     showDialog(
       context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: Text(existingSituation == null ? '새 외출 상황 추가' : '외출 상황 수정'),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                TextField(
-                  controller: titleController,
-                  autofocus: true,
-                  decoration: const InputDecoration(labelText: '상황 이름 (예: 출근, 운동, 여행)'),
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: tagController,
-                  decoration: const InputDecoration(labelText: '연동할 태그 (예: 출근)', prefixText: '# '),
-                ),
-                const SizedBox(height: 16),
-                const Text('대표 아이콘 선택', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: List.generate(Situation.presetIcons.length, (idx) {
-                    final isSelected = selectedIconIdx == idx;
-                    return InkWell(
-                      borderRadius: BorderRadius.circular(8),
-                      onTap: () => setDialogState(() => selectedIconIdx = idx),
-                      child: Container(
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          color: isSelected ? Color(selectedColorVal).withValues(alpha: 0.2) : null,
-                          border: Border.all(
-                            color: isSelected ? Color(selectedColorVal) : Colors.grey.shade400,
-                            width: isSelected ? 2 : 1,
-                          ),
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setDialogState) {
+            return AlertDialog(
+              title: Text(existing == null ? '새 외출 상황 추가' : '외출 상황 수정'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    TextField(
+                      controller: nameController,
+                      decoration: const InputDecoration(
+                        labelText: '상황 이름 (예: 출근, 운동, 여행)',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: tagController,
+                      decoration: const InputDecoration(
+                        labelText: '연동 태그 (예: 출근)',
+                        prefixText: '#',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      '아이콘 선택',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: _availableIcons.map((icon) {
+                        final isSelected = icon.codePoint == selectedIconCode;
+                        return InkWell(
                           borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Icon(Situation.presetIcons[idx], color: isSelected ? Color(selectedColorVal) : Colors.grey.shade700),
-                      ),
-                    );
-                  }),
+                          onTap: () {
+                            HapticFeedback.selectionClick();
+                            setDialogState(
+                              () => selectedIconCode = icon.codePoint,
+                            );
+                          },
+                          child: Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: isSelected
+                                  ? Color(selectedColorValue)
+                                      .withValues(alpha: 0.2)
+                                  : Colors.transparent,
+                              border: Border.all(
+                                color: isSelected
+                                    ? Color(selectedColorValue)
+                                    : Colors.grey.shade400,
+                                width: isSelected ? 2 : 1,
+                              ),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Icon(
+                              icon,
+                              color: isSelected
+                                  ? Color(selectedColorValue)
+                                  : null,
+                            ),
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      '테마 컬러 선택',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 10,
+                      runSpacing: 10,
+                      children: _availableColors.map((color) {
+                        final colorVal = color.toARGB32();
+                        final isSelected = colorVal == selectedColorValue;
+                        return GestureDetector(
+                          onTap: () {
+                            HapticFeedback.selectionClick();
+                            setDialogState(() => selectedColorValue = colorVal);
+                          },
+                          child: CircleAvatar(
+                            radius: 16,
+                            backgroundColor: color,
+                            child: isSelected
+                                ? const Icon(
+                                    Icons.check,
+                                    color: Colors.white,
+                                    size: 18,
+                                  )
+                                : null,
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 16),
-                const Text('테마 색상 선택', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 10,
-                  children: Situation.presetColors.map((color) {
-                    final colorVal = color.toARGB32();
-                    final isSelected = selectedColorVal == colorVal;
-                    return GestureDetector(
-                      onTap: () => setDialogState(() => selectedColorVal = colorVal),
-                      child: CircleAvatar(
-                        radius: 15,
-                        backgroundColor: color,
-                        child: isSelected ? const Icon(Icons.check, size: 16, color: Colors.white) : null,
-                      ),
-                    );
-                  }).toList(),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('취소'),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    final name = nameController.text.trim();
+                    final tag =
+                        tagController.text.trim().replaceAll('#', '');
+                    if (name.isEmpty) return;
+
+                    HapticFeedback.mediumImpact();
+                    if (existing == null) {
+                      widget.situations.add(
+                        Situation(
+                          id: DateTime.now()
+                              .microsecondsSinceEpoch
+                              .toString(),
+                          name: name,
+                          tag: tag.isEmpty ? name : tag,
+                          items: [],
+                          iconCodePoint: selectedIconCode,
+                          colorValue: selectedColorValue,
+                        ),
+                      );
+                    } else {
+                      existing.name = name;
+                      existing.tag = tag.isEmpty ? name : tag;
+                      existing.iconCodePoint = selectedIconCode;
+                      existing.colorValue = selectedColorValue;
+                    }
+                    _notifyParent();
+                    Navigator.pop(ctx);
+                  },
+                  child: const Text('저장'),
                 ),
               ],
-            ),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('취소')),
-            ElevatedButton(
-              onPressed: () {
-                final title = titleController.text.trim();
-                if (title.isEmpty) return;
-                final tag = tagController.text.trim().isEmpty ? title : tagController.text.trim();
-
-                if (existingSituation == null) {
-                  final newSituation = Situation(
-                    id: DateTime.now().millisecondsSinceEpoch.toString(),
-                    title: title,
-                    tag: tag,
-                    items: [],
-                    iconIndex: selectedIconIdx,
-                    colorValue: selectedColorVal,
-                  );
-                  _situations.add(newSituation);
-                  _selectedIndex = _situations.length - 1;
-                } else {
-                  existingSituation.title = title;
-                  existingSituation.tag = tag;
-                  existingSituation.iconIndex = selectedIconIdx;
-                  existingSituation.colorValue = selectedColorVal;
-                }
-
-                Navigator.pop(dialogContext);
-                _saveAndRefresh();
-              },
-              child: const Text('저장'),
-            ),
-          ],
-        ),
-      ),
+            );
+          },
+        );
+      },
     );
   }
 
-  void _confirmDeleteSituation(Situation situation) {
-    showDialog(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('상황 템플릿 삭제'),
-        content: Text('\'${situation.title}\' 상황과 포함된 소지품 목록(${situation.items.length}개)을 모두 삭제하시겠습니까?'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('취소')),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
-            onPressed: () {
-              _situations.remove(situation);
-              if (_selectedIndex >= _situations.length && _situations.isNotEmpty) {
-                _selectedIndex = _situations.length - 1;
-              } else if (_situations.isEmpty) {
-                _selectedIndex = 0;
-              }
-              Navigator.pop(dialogContext);
-              _saveAndRefresh();
-            },
-            child: const Text('삭제'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showItemDialog({PackingItem? existingItem, required Situation targetSituation}) {
-    final nameController = TextEditingController(text: existingItem?.name ?? '');
+  void _showItemDialog(Situation situation, {ChecklistItem? existing}) {
+    HapticFeedback.selectionClick();
+    final controller = TextEditingController(text: existing?.name ?? '');
 
     showDialog(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text(existingItem == null ? '소지품 추가' : '소지품 수정'),
+      builder: (ctx) => AlertDialog(
+        title: Text(existing == null ? '소지품 추가' : '소지품 이름 수정'),
         content: TextField(
-          controller: nameController,
+          controller: controller,
           autofocus: true,
-          decoration: const InputDecoration(labelText: '소지품 이름 (예: 충전기, 여권)'),
+          decoration: const InputDecoration(
+            labelText: '소지품 이름 (예: 지갑, 무선 이어폰, 우산)',
+            border: OutlineInputBorder(),
+          ),
+          onSubmitted: (_) {
+            final text = controller.text.trim();
+            if (text.isEmpty) return;
+            HapticFeedback.lightImpact();
+            if (existing == null) {
+              situation.items.add(
+                ChecklistItem(
+                  id: DateTime.now().microsecondsSinceEpoch.toString(),
+                  name: text,
+                ),
+              );
+            } else {
+              existing.name = text;
+            }
+            _notifyParent();
+            Navigator.pop(ctx);
+          },
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(dialogContext), child: const Text('취소')),
-          ElevatedButton(
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('취소'),
+          ),
+          FilledButton(
             onPressed: () {
-              final text = nameController.text.trim();
+              final text = controller.text.trim();
               if (text.isEmpty) return;
-
-              if (existingItem == null) {
-                targetSituation.items.add(PackingItem(
-                  id: DateTime.now().millisecondsSinceEpoch.toString(),
-                  name: text,
-                ));
+              HapticFeedback.lightImpact();
+              if (existing == null) {
+                situation.items.add(
+                  ChecklistItem(
+                    id: DateTime.now().microsecondsSinceEpoch.toString(),
+                    name: text,
+                  ),
+                );
               } else {
-                existingItem.name = text;
+                existing.name = text;
               }
-              Navigator.pop(dialogContext);
-              _saveAndRefresh();
+              _notifyParent();
+              Navigator.pop(ctx);
             },
             child: const Text('저장'),
           ),
@@ -226,214 +314,399 @@ class _SituationScreenState extends State<SituationScreen> {
     );
   }
 
-  void _handleResetOption(String option, Situation currentSituation) {
-    if (option == 'reset_current') {
-      for (var item in currentSituation.items) {
-        item.isChecked = false;
-      }
-    } else if (option == 'check_all_current') {
-      for (var item in currentSituation.items) {
-        item.isChecked = true;
-      }
-    } else if (option == 'reset_all') {
-      for (var sit in _situations) {
-        for (var item in sit.items) {
-          item.isChecked = false;
-        }
-      }
-    }
-    _saveAndRefresh();
-  }
-
-  Future<void> _toggleDarkMode() async {
-    final isDark = themeNotifier.value == ThemeMode.dark;
-    final nextDark = !isDark;
-    themeNotifier.value = nextDark ? ThemeMode.dark : ThemeMode.light;
-    await StorageService.saveIsDarkMode(nextDark);
-  }
-
   @override
   Widget build(BuildContext context) {
-    final filtered = _filteredSituations;
-    if (_selectedIndex >= filtered.length && filtered.isNotEmpty) {
-      _selectedIndex = 0;
-    }
-    final currentSituation = filtered.isNotEmpty ? filtered[_selectedIndex] : null;
-    final checkedCount = currentSituation?.items.where((i) => i.isChecked).length ?? 0;
-    final totalCount = currentSituation?.items.length ?? 0;
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
     return Scaffold(
-      appBar: AppBar(
-        title: _isSearching
-            ? TextField(
-                controller: _searchController,
-                autofocus: true,
-                decoration: const InputDecoration(
-                  hintText: '상황, 태그 또는 소지품 검색...',
-                  border: InputBorder.none,
-                  hintStyle: TextStyle(fontSize: 15),
-                ),
-                onChanged: (val) => setState(() => _searchKeyword = val.trim()),
-              )
-            : const Text('외출 상황별 소지품'),
-        actions: [
-          IconButton(
-            icon: Icon(_isSearching ? Icons.close : Icons.search),
-            tooltip: _isSearching ? '검색 닫기' : '상황 검색',
-            onPressed: () {
-              setState(() {
-                _isSearching = !_isSearching;
-                if (!_isSearching) {
-                  _searchController.clear();
-                  _searchKeyword = '';
-                }
-              });
-            },
-          ),
-          if (!_isSearching) ...[
-            IconButton(
-              icon: Icon(isDark ? Icons.light_mode : Icons.dark_mode_outlined),
-              tooltip: '다크 모드 전환',
-              onPressed: _toggleDarkMode,
-            ),
-            if (currentSituation != null)
-              PopupMenuButton<String>(
-                icon: const Icon(Icons.checklist_rtl),
-                tooltip: '체크 초기화 옵션',
-                onSelected: (opt) => _handleResetOption(opt, currentSituation),
-                itemBuilder: (context) => [
-                  PopupMenuItem(value: 'reset_current', child: Text('[${currentSituation.title}] 체크 모두 해제')),
-                  PopupMenuItem(value: 'check_all_current', child: Text('[${currentSituation.title}] 모두 체크 완료')),
-                  const PopupMenuDivider(),
-                  const PopupMenuItem(value: 'reset_all', child: Text('모든 상황 체크 일괄 초기화')),
-                ],
-              ),
-          ],
-        ],
-      ),
       body: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
+          Container(
+            width: double.infinity,
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: Row(
+            color: Theme.of(context)
+                .colorScheme
+                .surfaceContainerHighest
+                .withValues(alpha: 0.5),
+            child: const Row(
               children: [
-                ...List.generate(filtered.length, (index) {
-                  final sit = filtered[index];
-                  final isSelected = index == _selectedIndex;
-                  return Padding(
-                    padding: const EdgeInsets.only(right: 8.0),
-                    child: ChoiceChip(
-                      avatar: Icon(sit.icon, size: 18, color: isSelected ? Colors.white : sit.color),
-                      label: Text('${sit.title} (#${sit.tag})'),
-                      selected: isSelected,
-                      selectedColor: sit.color,
-                      labelStyle: TextStyle(color: isSelected ? Colors.white : null, fontWeight: isSelected ? FontWeight.bold : null),
-                      onSelected: (_) => setState(() => _selectedIndex = index),
-                    ),
-                  );
-                }),
-                ActionChip(
-                  avatar: const Icon(Icons.add, size: 18),
-                  label: const Text('상황 추가'),
-                  onPressed: () => _showSituationDialog(),
+                Icon(Icons.swipe, size: 16),
+                SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '팁: 오른쪽으로 밀면 체크, 왼쪽으로 밀면 삭제, 우측 ≡를 끌면 순서가 바뀝니다.',
+                    style: TextStyle(fontSize: 12),
+                  ),
                 ),
               ],
             ),
           ),
-          if (currentSituation != null)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              color: currentSituation.color.withValues(alpha: 0.1),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Row(
-                    children: [
-                      Icon(currentSituation.icon, size: 20, color: currentSituation.color),
-                      const SizedBox(width: 8),
-                      Text(
-                        '챙긴 소지품: $checkedCount / $totalCount 완료',
-                        style: TextStyle(fontWeight: FontWeight.bold, color: currentSituation.color),
-                      ),
-                    ],
-                  ),
-                  Row(
-                    children: [
-                      TextButton.icon(
-                        icon: const Icon(Icons.edit_outlined, size: 16),
-                        label: const Text('상황 수정'),
-                        onPressed: () => _showSituationDialog(existingSituation: currentSituation),
-                      ),
-                      TextButton.icon(
-                        icon: const Icon(Icons.delete_outline, size: 16, color: Colors.red),
-                        label: const Text('상황 삭제', style: TextStyle(color: Colors.red)),
-                        onPressed: () => _confirmDeleteSituation(currentSituation),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          const Divider(height: 1),
           Expanded(
-            child: currentSituation == null
-                ? const Center(child: Text('등록된 외출 상황이 없습니다.'))
-                : currentSituation.items.isEmpty
-                    ? const Center(child: Text('우측 하단 + 버튼을 눌러 소지품을 추가하세요.'))
-                    : ListView.builder(
-                        itemCount: currentSituation.items.length,
-                        itemBuilder: (context, idx) {
-                          final item = currentSituation.items[idx];
-                          return ListTile(
-                            leading: Checkbox(
-                              activeColor: currentSituation.color,
-                              value: item.isChecked,
-                              onChanged: (val) {
-                                item.isChecked = val ?? false;
-                                _saveAndRefresh();
-                              },
-                            ),
-                            title: Text(
-                              item.name,
-                              style: TextStyle(
-                                decoration: item.isChecked ? TextDecoration.lineThrough : null,
-                                color: item.isChecked ? Colors.grey : null,
+            child: widget.situations.isEmpty
+                ? Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(
+                          Icons.backpack_outlined,
+                          size: 64,
+                          color: Colors.grey,
+                        ),
+                        const SizedBox(height: 12),
+                        const Text('등록된 외출 상황이 없습니다.'),
+                        const SizedBox(height: 12),
+                        FilledButton.icon(
+                          onPressed: () => _showSituationDialog(),
+                          icon: const Icon(Icons.add),
+                          label: const Text('첫 외출 상황 만들기'),
+                        ),
+                      ],
+                    ),
+                  )
+                : ListView.builder(
+                    padding: const EdgeInsets.fromLTRB(12, 8, 12, 88),
+                    itemCount: widget.situations.length,
+                    itemBuilder: (context, sIndex) {
+                      final situation = widget.situations[sIndex];
+                      final total = situation.items.length;
+                      final checked = situation.checkedCount;
+                      final progress = situation.progress;
+                      final isComplete = situation.isAllChecked;
+                      final activeColor =
+                          isComplete ? Colors.green : situation.color;
+
+                      return Card(
+                        margin: const EdgeInsets.symmetric(vertical: 8),
+                        elevation: isComplete ? 3 : 1,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16),
+                          side: BorderSide(
+                            color: isComplete
+                                ? Colors.green.withValues(alpha: 0.7)
+                                : situation.color.withValues(alpha: 0.3),
+                            width: isComplete ? 2 : 1,
+                          ),
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.all(14),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  CircleAvatar(
+                                    backgroundColor:
+                                        activeColor.withValues(alpha: 0.15),
+                                    child: Icon(
+                                      isComplete
+                                          ? Icons.verified
+                                          : situation.iconData,
+                                      color: activeColor,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Row(
+                                          children: [
+                                            Flexible(
+                                              child: Text(
+                                                situation.name,
+                                                style: const TextStyle(
+                                                  fontSize: 18,
+                                                  fontWeight: FontWeight.bold,
+                                                ),
+                                              ),
+                                            ),
+                                            const SizedBox(width: 8),
+                                            Container(
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                horizontal: 8,
+                                                vertical: 2,
+                                              ),
+                                              decoration: BoxDecoration(
+                                                color: situation.color
+                                                    .withValues(alpha: 0.15),
+                                                borderRadius:
+                                                    BorderRadius.circular(12),
+                                              ),
+                                              child: Text(
+                                                '#${situation.tag}',
+                                                style: TextStyle(
+                                                  fontSize: 12,
+                                                  color: situation.color,
+                                                  fontWeight: FontWeight.w600,
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          total == 0
+                                              ? '소지품을 추가해 주세요'
+                                              : isComplete
+                                                  ? '준비 완료! 모든 소지품을 챙겼습니다 🎉'
+                                                  : '$checked / $total개 챙김 (${(progress * 100).round()}%)',
+                                          style: TextStyle(
+                                            fontSize: 12,
+                                            fontWeight: isComplete
+                                                ? FontWeight.bold
+                                                : FontWeight.normal,
+                                            color: isComplete
+                                                ? Colors.green
+                                                : Colors.grey.shade600,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  if (total > 0)
+                                    Tooltip(
+                                      message: isComplete
+                                          ? '전체 체크 해제'
+                                          : '전체 체크 완료',
+                                      child: TextButton.icon(
+                                        onPressed: () =>
+                                            _toggleAllItems(situation),
+                                        icon: Icon(
+                                          isComplete
+                                              ? Icons.restart_alt
+                                              : Icons.done_all,
+                                          size: 18,
+                                        ),
+                                        label: Text(
+                                          isComplete ? '초기화' : '전체체크',
+                                          style:
+                                              const TextStyle(fontSize: 12),
+                                        ),
+                                      ),
+                                    ),
+                                  PopupMenuButton<String>(
+                                    onSelected: (value) {
+                                      if (value == 'edit') {
+                                        _showSituationDialog(
+                                            existing: situation);
+                                      } else if (value == 'delete') {
+                                        HapticFeedback.mediumImpact();
+                                        widget.situations.removeAt(sIndex);
+                                        _notifyParent();
+                                      }
+                                    },
+                                    itemBuilder: (ctx) => const [
+                                      PopupMenuItem(
+                                        value: 'edit',
+                                        child: Text('상황 수정'),
+                                      ),
+                                      PopupMenuItem(
+                                        value: 'delete',
+                                        child: Text('상황 삭제'),
+                                      ),
+                                    ],
+                                  ),
+                                ],
                               ),
-                            ),
-                            trailing: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                IconButton(
-                                  icon: const Icon(Icons.edit, size: 20),
-                                  onPressed: () => _showItemDialog(existingItem: item, targetSituation: currentSituation),
-                                ),
-                                IconButton(
-                                  icon: const Icon(Icons.delete_outline, size: 20),
-                                  onPressed: () {
-                                    currentSituation.items.removeAt(idx);
-                                    _saveAndRefresh();
+                              if (total > 0) ...[
+                                const SizedBox(height: 10),
+                                TweenAnimationBuilder<double>(
+                                  tween: Tween<double>(
+                                      begin: 0, end: progress),
+                                  duration: const Duration(milliseconds: 250),
+                                  builder: (context, value, _) {
+                                    return ClipRRect(
+                                      borderRadius: BorderRadius.circular(8),
+                                      child: LinearProgressIndicator(
+                                        value: value,
+                                        minHeight: 8,
+                                        backgroundColor: Colors.grey
+                                            .withValues(alpha: 0.2),
+                                        valueColor:
+                                            AlwaysStoppedAnimation<Color>(
+                                          activeColor,
+                                        ),
+                                      ),
+                                    );
                                   },
                                 ),
                               ],
-                            ),
-                          );
-                        },
-                      ),
+                              const SizedBox(height: 8),
+                              if (situation.items.isNotEmpty)
+                                ReorderableListView.builder(
+                                  shrinkWrap: true,
+                                  physics:
+                                      const NeverScrollableScrollPhysics(),
+                                  buildDefaultDragHandles: false,
+                                  itemCount: situation.items.length,
+                                  onReorderStart: (_) =>
+                                      HapticFeedback.selectionClick(),
+                                  onReorderItem: (oldIndex, newIndex) {
+                                    HapticFeedback.mediumImpact();
+                                    if (newIndex > oldIndex) newIndex -= 1;
+                                    final moved =
+                                        situation.items.removeAt(oldIndex);
+                                    situation.items.insert(newIndex, moved);
+                                    _notifyParent();
+                                  },
+                                  itemBuilder: (context, iIndex) {
+                                    final item = situation.items[iIndex];
+                                    return Dismissible(
+                                      key: ValueKey(
+                                          '${situation.id}_${item.id}'),
+                                      direction: DismissDirection.horizontal,
+                                      background: Container(
+                                        margin: const EdgeInsets.symmetric(
+                                            vertical: 2),
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 16),
+                                        alignment: Alignment.centerLeft,
+                                        decoration: BoxDecoration(
+                                          color: Colors.green
+                                              .withValues(alpha: 0.85),
+                                          borderRadius:
+                                              BorderRadius.circular(8),
+                                        ),
+                                        child: Row(
+                                          children: [
+                                            Icon(
+                                              item.isChecked
+                                                  ? Icons.remove_done
+                                                  : Icons.check_circle,
+                                              color: Colors.white,
+                                            ),
+                                            const SizedBox(width: 8),
+                                            Text(
+                                              item.isChecked
+                                                  ? '체크 해제'
+                                                  : '챙김 완료!',
+                                              style: const TextStyle(
+                                                color: Colors.white,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      secondaryBackground: Container(
+                                        margin: const EdgeInsets.symmetric(
+                                            vertical: 2),
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 16),
+                                        alignment: Alignment.centerRight,
+                                        decoration: BoxDecoration(
+                                          color: Colors.redAccent
+                                              .withValues(alpha: 0.9),
+                                          borderRadius:
+                                              BorderRadius.circular(8),
+                                        ),
+                                        child: const Row(
+                                          mainAxisAlignment:
+                                              MainAxisAlignment.end,
+                                          children: [
+                                            Text(
+                                              '삭제',
+                                              style: TextStyle(
+                                                color: Colors.white,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
+                                            SizedBox(width: 8),
+                                            Icon(
+                                              Icons.delete_outline,
+                                              color: Colors.white,
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      confirmDismiss: (direction) async {
+                                        if (direction ==
+                                            DismissDirection.startToEnd) {
+                                          _toggleSingleItem(situation, item);
+                                          return false;
+                                        }
+                                        return true;
+                                      },
+                                      onDismissed: (_) {
+                                        _deleteChecklistItem(
+                                            situation, iIndex);
+                                      },
+                                      child: ListTile(
+                                        dense: true,
+                                        contentPadding:
+                                            const EdgeInsets.symmetric(
+                                                horizontal: 4),
+                                        leading: Checkbox(
+                                          value: item.isChecked,
+                                          activeColor: activeColor,
+                                          onChanged: (_) => _toggleSingleItem(
+                                              situation, item),
+                                        ),
+                                        title: Text(
+                                          item.name,
+                                          style: TextStyle(
+                                            decoration: item.isChecked
+                                                ? TextDecoration.lineThrough
+                                                : null,
+                                            color: item.isChecked
+                                                ? Colors.grey
+                                                : null,
+                                          ),
+                                        ),
+                                        onTap: () =>
+                                            _toggleSingleItem(situation, item),
+                                        trailing: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            IconButton(
+                                              icon: const Icon(
+                                                Icons.edit_outlined,
+                                                size: 18,
+                                              ),
+                                              tooltip: '소지품 수정',
+                                              onPressed: () => _showItemDialog(
+                                                situation,
+                                                existing: item,
+                                              ),
+                                            ),
+                                            ReorderableDragStartListener(
+                                              index: iIndex,
+                                              child: const Padding(
+                                                padding: EdgeInsets.all(8.0),
+                                                child: Icon(
+                                                  Icons.drag_handle,
+                                                  color: Colors.grey,
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                ),
+                              Align(
+                                alignment: Alignment.centerLeft,
+                                child: TextButton.icon(
+                                  onPressed: () => _showItemDialog(situation),
+                                  icon: const Icon(Icons.add, size: 18),
+                                  label: const Text('소지품 항목 추가'),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
           ),
         ],
       ),
-      floatingActionButton: currentSituation == null
-          ? null
-          : FloatingActionButton.extended(
-              backgroundColor: currentSituation.color,
-              foregroundColor: Colors.white,
-              onPressed: () => _showItemDialog(targetSituation: currentSituation),
-              icon: const Icon(Icons.add),
-              label: const Text('소지품 추가'),
-            ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => _showSituationDialog(),
+        icon: const Icon(Icons.add),
+        label: const Text('새 상황 추가'),
+      ),
     );
   }
 }

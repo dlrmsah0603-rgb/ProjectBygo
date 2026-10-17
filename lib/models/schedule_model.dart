@@ -1,78 +1,58 @@
 class Schedule {
   String id;
   String title;
-  DateTime dateTime;
-  String? tag;
-  String? situationId;
-  bool isCompleted;
-  List<int> repeatDays; // 1(월) ~ 7(일), 비어있으면 단일 일정
-  List<String> completedDates; // 반복 일정의 날짜별 완료 기록 (yyyy-MM-dd)
+  DateTime date;
+  String time;
+  String tag;
+  List<int> repeatDays; // 1(월) ~ 7(일)
 
   Schedule({
     required this.id,
-    required this.title,
-    required this.dateTime,
-    this.tag,
-    this.situationId,
-    this.isCompleted = false,
-    List<int>? repeatDays,
-    List<String>? completedDates,
-  })  : repeatDays = repeatDays ?? [],
-        completedDates = completedDates ?? [];
+    String? title,
+    String? name,
+    required this.date,
+    required this.time,
+    required this.tag,
+    this.repeatDays = const [],
+  }) : title = title ?? name ?? '';
 
-  static String dateKey(DateTime day) =>
-      '${day.year.toString().padLeft(4, '0')}-${day.month.toString().padLeft(2, '0')}-${day.day.toString().padLeft(2, '0')}';
+  String get name => title;
+  set name(String value) => title = value;
 
-  bool occursOn(DateTime day) {
-    if (repeatDays.isEmpty) {
-      return dateTime.year == day.year &&
-          dateTime.month == day.month &&
-          dateTime.day == day.day;
-    }
-    return repeatDays.contains(day.weekday);
+  bool occursOn(DateTime targetDate) {
+    final isSameDate = date.year == targetDate.year &&
+        date.month == targetDate.month &&
+        date.day == targetDate.day;
+    if (isSameDate) return true;
+    if (repeatDays.contains(targetDate.weekday)) return true;
+    return false;
   }
 
-  bool isCompletedOn(DateTime day) {
-    if (repeatDays.isEmpty) return isCompleted;
-    return completedDates.contains(dateKey(day));
+  factory Schedule.fromJson(Map<String, dynamic> json) {
+    return Schedule(
+      id: (json['id'] as String?) ??
+          DateTime.now().microsecondsSinceEpoch.toString(),
+      title: (json['title'] as String?) ?? (json['name'] as String?) ?? '',
+      date: json['date'] != null
+          ? DateTime.parse(json['date'] as String)
+          : DateTime.now(),
+      time: (json['time'] as String?) ?? '09:00',
+      tag: (json['tag'] as String?) ?? '',
+      repeatDays: ((json['repeatDays'] as List<dynamic>?) ?? [])
+          .map((e) => e as int)
+          .toList(),
+    );
   }
 
-  void setCompletedOn(DateTime day, bool completed) {
-    if (repeatDays.isEmpty) {
-      isCompleted = completed;
-    } else {
-      final key = dateKey(day);
-      if (completed) {
-        if (!completedDates.contains(key)) completedDates.add(key);
-      } else {
-        completedDates.remove(key);
-      }
-    }
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'title': title,
+      'name': title,
+      'date': date.toIso8601String(),
+      'time': time,
+      'tag': tag,
+      'repeatDays': repeatDays,
+    };
   }
-
-  Map<String, dynamic> toJson() => {
-        'id': id,
-        'title': title,
-        'dateTime': dateTime.toIso8601String(),
-        'tag': tag,
-        'situationId': situationId,
-        'isCompleted': isCompleted,
-        'repeatDays': repeatDays,
-        'completedDates': completedDates,
-      };
-
-  factory Schedule.fromJson(Map<String, dynamic> json) => Schedule(
-        id: json['id'] as String,
-        title: json['title'] as String,
-        dateTime: DateTime.parse(json['dateTime'] as String),
-        tag: json['tag'] as String?,
-        situationId: json['situationId'] as String?,
-        isCompleted: json['isCompleted'] as bool? ?? false,
-        repeatDays: (json['repeatDays'] as List<dynamic>? ?? [])
-            .map((e) => e as int)
-            .toList(),
-        completedDates: (json['completedDates'] as List<dynamic>? ?? [])
-            .map((e) => e as String)
-            .toList(),
-      );
 }

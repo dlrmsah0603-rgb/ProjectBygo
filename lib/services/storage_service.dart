@@ -96,7 +96,7 @@ class StorageService {
         '${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}';
     final defaultFileName = 'project_bygo_backup_$dateStamp.json';
 
-    final String? outputFile = await FilePicker.saveFile(
+    final String? outputFile = await FilePicker.platform.saveFile(
       dialogTitle: '백업 JSON 파일 저장 위치 선택',
       fileName: defaultFileName,
       type: FileType.custom,
@@ -118,7 +118,7 @@ class StorageService {
 
   // [복원] 기기에서 JSON 파일을 선택해 업로드(불러오기)
   static Future<bool> importBackupFromFile() async {
-    final FilePickerResult? result = await FilePicker.pickFiles(
+    final FilePickerResult? result = await FilePicker.platform.pickFiles(
       dialogTitle: '복원할 백업 JSON 파일 선택',
       type: FileType.custom,
       allowedExtensions: ['json'],

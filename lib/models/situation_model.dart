@@ -1,88 +1,117 @@
 import 'package:flutter/material.dart';
 
-class PackingItem {
+class ChecklistItem {
   String id;
   String name;
   bool isChecked;
 
-  PackingItem({
+  ChecklistItem({
     required this.id,
-    required this.name,
+    String? name,
+    String? title,
     this.isChecked = false,
-  });
+  }) : name = name ?? title ?? '';
 
-  Map<String, dynamic> toJson() => {
-        'id': id,
-        'name': name,
-        'isChecked': isChecked,
-      };
+  String get title => name;
+  set title(String value) => name = value;
 
-  factory PackingItem.fromJson(Map<String, dynamic> json) => PackingItem(
-        id: json['id'] as String,
-        name: json['name'] as String,
-        isChecked: json['isChecked'] as bool? ?? false,
-      );
+  factory ChecklistItem.fromJson(Map<String, dynamic> json) {
+    return ChecklistItem(
+      id: (json['id'] as String?) ??
+          DateTime.now().microsecondsSinceEpoch.toString(),
+      name: (json['name'] as String?) ?? (json['title'] as String?) ?? '',
+      isChecked: (json['isChecked'] as bool?) ?? false,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'name': name,
+      'title': name,
+      'isChecked': isChecked,
+    };
+  }
 }
 
 class Situation {
   String id;
-  String title;
+  String name;
   String tag;
-  List<PackingItem> items;
-  int iconIndex;
+  List<ChecklistItem> items;
+  int iconCodePoint;
   int colorValue;
 
   Situation({
     required this.id,
-    required this.title,
+    String? name,
+    String? title,
     required this.tag,
     required this.items,
-    this.iconIndex = 0,
-    this.colorValue = 0xFF3F51B5,
-  });
+    this.iconCodePoint = 0xe8f9, // Icons.work
+    this.colorValue = 0xFF2196F3, // Colors.blue
+  }) : name = name ?? title ?? '';
 
-  static const List<IconData> presetIcons = [
-    Icons.backpack_outlined,
-    Icons.work_outline,
-    Icons.fitness_center,
-    Icons.flight_takeoff,
-    Icons.menu_book_outlined,
-    Icons.local_cafe_outlined,
-    Icons.shopping_bag_outlined,
-  ];
+  String get title => name;
+  set title(String value) => name = value;
 
-  static const List<Color> presetColors = [
-    Color(0xFF3F51B5), // Indigo
-    Color(0xFF1E88E5), // Blue
-    Color(0xFF43A047), // Green
-    Color(0xFFFB8C00), // Orange
-    Color(0xFFE53935), // Red
-    Color(0xFF8E24AA), // Purple
-    Color(0xFF00897B), // Teal
-  ];
-
-  IconData get icon =>
-      presetIcons[iconIndex.clamp(0, presetIcons.length - 1)];
+  IconData get iconData =>
+      // ignore: non_const_argument_for_const_parameter
+      IconData(iconCodePoint, fontFamily: 'MaterialIcons');
 
   Color get color => Color(colorValue);
 
-  Map<String, dynamic> toJson() => {
-        'id': id,
-        'title': title,
-        'tag': tag,
-        'items': items.map((e) => e.toJson()).toList(),
-        'iconIndex': iconIndex,
-        'colorValue': colorValue,
-      };
+  int get checkedCount => items.where((item) => item.isChecked).length;
 
-  factory Situation.fromJson(Map<String, dynamic> json) => Situation(
-        id: json['id'] as String,
-        title: json['title'] as String,
-        tag: json['tag'] as String? ?? '',
-        items: (json['items'] as List<dynamic>? ?? [])
-            .map((e) => PackingItem.fromJson(e as Map<String, dynamic>))
-            .toList(),
-        iconIndex: json['iconIndex'] as int? ?? 0,
-        colorValue: json['colorValue'] as int? ?? 0xFF3F51B5,
-      );
+  double get progress =>
+      items.isEmpty ? 0.0 : checkedCount / items.length;
+
+  bool get isAllChecked =>
+      items.isNotEmpty && checkedCount == items.length;
+
+  factory Situation.fromJson(Map<String, dynamic> json) {
+    final rawItems = (json['items'] as List<dynamic>?) ?? [];
+    final parsedItems = <ChecklistItem>[];
+
+    for (var i = 0; i < rawItems.length; i++) {
+      final element = rawItems[i];
+      if (element is String) {
+        parsedItems.add(
+          ChecklistItem(
+            id: '${DateTime.now().microsecondsSinceEpoch}_$i',
+            name: element,
+            isChecked: false,
+          ),
+        );
+      } else if (element is Map<String, dynamic>) {
+        parsedItems.add(ChecklistItem.fromJson(element));
+      } else if (element is Map) {
+        parsedItems.add(
+          ChecklistItem.fromJson(Map<String, dynamic>.from(element)),
+        );
+      }
+    }
+
+    return Situation(
+      id: (json['id'] as String?) ??
+          DateTime.now().microsecondsSinceEpoch.toString(),
+      name: (json['name'] as String?) ?? (json['title'] as String?) ?? '',
+      tag: (json['tag'] as String?) ?? '',
+      items: parsedItems,
+      iconCodePoint: (json['iconCodePoint'] as int?) ?? Icons.work.codePoint,
+      colorValue: (json['colorValue'] as int?) ?? Colors.blue.toARGB32(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'name': name,
+      'title': name,
+      'tag': tag,
+      'items': items.map((e) => e.toJson()).toList(),
+      'iconCodePoint': iconCodePoint,
+      'colorValue': colorValue,
+    };
+  }
 }
