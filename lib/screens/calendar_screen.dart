@@ -253,6 +253,19 @@ class _CalendarScreenState extends State<CalendarScreen> {
                 ),
               ),
               actions: [
+                if (existing != null)
+                  TextButton.icon(
+                    onPressed: () {
+                      HapticFeedback.mediumImpact();
+                      Navigator.pop(ctx);
+                      _deleteSchedule(existing); // 기존 스와이프 삭제 메서드 재사용 (실행 취소 스낵바 지원)
+                    },
+                    icon: const Icon(Icons.delete_outline, color: Colors.redAccent, size: 18),
+                    label: const Text(
+                      '삭제',
+                      style: TextStyle(color: Colors.redAccent),
+                    ),
+                  ),
                 TextButton(
                   onPressed: () => Navigator.pop(ctx),
                   child: const Text('취소'),
@@ -671,7 +684,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                 markerBuilder: (context, date, events) {
                   if (events.isEmpty) return const SizedBox.shrink();
                   return Padding(
-                    padding: const EdgeInsets.only(top: 36),
+                    padding: const EdgeInsets.only(top: 30, left: 1, right: 1),
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: events.take(2).map((sc) {
@@ -683,7 +696,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                             horizontal: 2,
                             vertical: 0.5,
                           ),
-                          padding: const EdgeInsets.symmetric(horizontal: 3),
+                          padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 0.5),
                           decoration: BoxDecoration(
                             color: badgeColor.withValues(alpha: 0.2),
                             borderRadius: BorderRadius.circular(3),
@@ -694,7 +707,8 @@ class _CalendarScreenState extends State<CalendarScreen> {
                             overflow: TextOverflow.ellipsis,
                             textAlign: TextAlign.center,
                             style: TextStyle(
-                              fontSize: 9,
+                              fontSize: 8.5,
+                              height: 1.1,
                               fontWeight: FontWeight.w600,
                               color: badgeColor,
                             ),

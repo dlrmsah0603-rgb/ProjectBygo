@@ -368,38 +368,45 @@ class _SituationScreenState extends State<SituationScreen> {
                       }
                     });
                   },
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 10,
-                    ),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(14),
-                      border: Border.all(
-                        color: isSelected
-                            ? baseColor
-                            : baseColor.withValues(alpha: 0.4),
-                        width: 1.5,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 160),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 10,
                       ),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          isComplete ? Icons.verified : situation.iconData,
-                          size: 18,
-                          color: isSelected ? Colors.white : baseColor,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(
+                          color: isSelected
+                              ? baseColor
+                              : baseColor.withValues(alpha: 0.4),
+                          width: 1.5,
                         ),
-                        const SizedBox(width: 8),
-                        Text(
-                          situation.name,
-                          style: TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.bold,
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            isComplete ? Icons.verified : situation.iconData,
+                            size: 18,
                             color: isSelected ? Colors.white : baseColor,
                           ),
-                        ),
-                      ],
+                          const SizedBox(width: 8),
+                          Flexible(
+                            child: Text(
+                              situation.name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.bold,
+                                color: isSelected ? Colors.white : baseColor,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
                 ),
@@ -456,6 +463,8 @@ class _SituationScreenState extends State<SituationScreen> {
                               Flexible(
                                 child: Text(
                                   situation.name,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
                                   style: const TextStyle(
                                     fontSize: 18,
                                     fontWeight: FontWeight.bold,
@@ -464,6 +473,7 @@ class _SituationScreenState extends State<SituationScreen> {
                               ),
                               const SizedBox(width: 8),
                               Container(
+                                constraints: const BoxConstraints(maxWidth: 90),
                                 padding: const EdgeInsets.symmetric(
                                   horizontal: 8,
                                   vertical: 2,
@@ -475,6 +485,8 @@ class _SituationScreenState extends State<SituationScreen> {
                                 ),
                                 child: Text(
                                   '#${situation.tag}',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
                                   style: TextStyle(
                                     fontSize: 12,
                                     color: situation.color,
