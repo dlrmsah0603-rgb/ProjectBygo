@@ -6,6 +6,9 @@ class Schedule {
   String tag;
   List<int> repeatDays; // 1(월) ~ 7(일)
 
+  List<int> repeatWeekdays; // 요일 반복 (예: [1, 3, 5] = 월, 수, 금)
+  bool get isRepeating => repeatWeekdays.isNotEmpty;
+
   Schedule({
     required this.id,
     String? title,
@@ -14,6 +17,8 @@ class Schedule {
     required this.time,
     required this.tag,
     this.repeatDays = const [],
+
+    this.repeatWeekdays = const [],
   }) : title = title ?? name ?? '';
 
   String get name => title;

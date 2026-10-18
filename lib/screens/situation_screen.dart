@@ -21,6 +21,10 @@ class SituationScreen extends StatefulWidget {
 class _SituationScreenState extends State<SituationScreen> {
   String? _selectedSituationId;
 
+  // 다중 선택 및 순서 변경 모드 상태
+  bool _isMultiSelectMode = false;
+  final Set<String> _multiSelectedIds = {};
+
   static const List<IconData> _availableIcons = [
     Icons.work,
     Icons.fitness_center,
@@ -56,6 +60,56 @@ class _SituationScreenState extends State<SituationScreen> {
   void _notifyParent() {
     setState(() {});
     widget.onSituationsChanged(widget.situations);
+  }
+
+  void _exitMultiSelectMode() {
+    HapticFeedback.selectionClick();
+    setState(() {
+      _isMultiSelectMode = false;
+      _multiSelectedIds.clear();
+    });
+  }
+
+  void _deleteSelectedSituations() {
+    if (_multiSelectedIds.isEmpty) {
+      _exitMultiSelectMode();
+      return;
+    }
+
+    final backupList = List<Situation>.from(widget.situations);
+    final deletedCount = _multiSelectedIds.length;
+
+    HapticFeedback.heavyImpact();
+    setState(() {
+      widget.situations.removeWhere((s) => _multiSelectedIds.contains(s.id));
+      if (_selectedSituationId != null &&
+          _multiSelectedIds.contains(_selectedSituationId)) {
+        _selectedSituationId = null;
+      }
+      _multiSelectedIds.clear();
+      _isMultiSelectMode = false;
+    });
+    widget.onSituationsChanged(widget.situations);
+
+    ScaffoldMessenger.of(context).clearSnackBars();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('$deletedCount개의 외출 상황이 삭제되었습니다.'),
+        behavior: SnackBarBehavior.floating,
+        action: SnackBarAction(
+          label: '실행 취소',
+          onPressed: () {
+            HapticFeedback.lightImpact();
+            setState(() {
+              widget.situations
+                ..clear()
+                ..addAll(backupList);
+            });
+            widget.onSituationsChanged(widget.situations);
+          },
+        ),
+      ),
+    );
   }
 
   void _toggleAllItems(Situation situation) {
@@ -326,90 +380,232 @@ class _SituationScreenState extends State<SituationScreen> {
     );
   }
 
+  Widget _buildSituationChipContent(
+    Situation situation, {
+    required bool isSelected,
+    required bool isMultiSelected,
+    bool isFeedback = false,
+  }) {
+    final isComplete = situation.isAllChecked;
+    final baseColor = isComplete ? Colors.green : situation.color;
+    final effectiveColor =
+        (_isMultiSelectMode && isMultiSelected) ? Colors.redAccent : baseColor;
+    final isFilled =
+        _isMultiSelectMode ? isMultiSelected : isSelected;
+
+    return Material(
+      color: isFilled
+          ? effectiveColor
+          : effectiveColor.withValues(alpha: 0.12),
+      borderRadius: BorderRadius.circular(14),
+      elevation: (isFilled || isFeedback) ? 4 : 0,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 160),
+        child: Container(
+          padding: const EdgeInsets.symmetric(
+            horizontal: 14,
+            vertical: 10,
+          ),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: isFilled
+                  ? effectiveColor
+                  : effectiveColor.withValues(alpha: 0.4),
+              width: 1.5,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (_isMultiSelectMode) ...[
+                Icon(
+                  isMultiSelected
+                      ? Icons.check_circle
+                      : Icons.radio_button_unchecked,
+                  size: 18,
+                  color: isFilled ? Colors.white : effectiveColor,
+                ),
+                const SizedBox(width: 6),
+              ] else ...[
+                Icon(
+                  isComplete ? Icons.verified : situation.iconData,
+                  size: 18,
+                  color: isFilled ? Colors.white : effectiveColor,
+                ),
+                const SizedBox(width: 8),
+              ],
+              Flexible(
+                child: Text(
+                  situation.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.bold,
+                    color: isFilled ? Colors.white : effectiveColor,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildSituationButtons() {
+    final allSelected =
+        widget.situations.isNotEmpty &&
+        _multiSelectedIds.length == widget.situations.length;
+
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            '외출 상황 선택',
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.bold,
-              color: Colors.grey,
-            ),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  _isMultiSelectMode
+                      ? '${_multiSelectedIds.length}개 선택됨 · 드래그하여 순서 변경'
+                      : '외출 상황 선택 (꾹 눌러 순서 변경·다중 삭제)',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.bold,
+                    color: _isMultiSelectMode
+                        ? Theme.of(context).colorScheme.primary
+                        : Colors.grey,
+                  ),
+                ),
+              ),
+              if (_isMultiSelectMode) ...[
+                TextButton(
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  onPressed: () {
+                    HapticFeedback.selectionClick();
+                    setState(() {
+                      if (allSelected) {
+                        _multiSelectedIds.clear();
+                      } else {
+                        _multiSelectedIds.addAll(
+                          widget.situations.map((s) => s.id),
+                        );
+                      }
+                    });
+                  },
+                  child: Text(allSelected ? '전체 해제' : '전체 선택'),
+                ),
+                TextButton(
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  onPressed: _exitMultiSelectMode,
+                  child: const Text('완료'),
+                ),
+              ],
+            ],
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 8),
           Wrap(
             spacing: 10,
             runSpacing: 10,
             children: widget.situations.map((situation) {
               final isSelected = situation.id == _selectedSituationId;
-              final isComplete = situation.isAllChecked;
-              final baseColor = isComplete ? Colors.green : situation.color;
+              final isMultiSelected = _multiSelectedIds.contains(situation.id);
 
-              return Material(
-                color: isSelected
-                    ? baseColor
-                    : baseColor.withValues(alpha: 0.12),
-                borderRadius: BorderRadius.circular(14),
-                elevation: isSelected ? 2 : 0,
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(14),
-                  onTap: () {
+              return DragTarget<String>(
+                key: ValueKey(situation.id),
+                onWillAcceptWithDetails: (details) {
+                  final draggedId = details.data;
+                  if (draggedId == situation.id) return false;
+
+                  final oldIndex = widget.situations
+                      .indexWhere((s) => s.id == draggedId);
+                  final newIndex = widget.situations
+                      .indexWhere((s) => s.id == situation.id);
+
+                  if (oldIndex != -1 &&
+                      newIndex != -1 &&
+                      oldIndex != newIndex) {
                     HapticFeedback.selectionClick();
                     setState(() {
-                      if (_selectedSituationId == situation.id) {
-                        _selectedSituationId = null;
-                      } else {
-                        _selectedSituationId = situation.id;
-                      }
+                      final moved = widget.situations.removeAt(oldIndex);
+                      widget.situations.insert(newIndex, moved);
                     });
-                  },
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 160),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 14,
-                        vertical: 10,
-                      ),
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(
-                          color: isSelected
-                              ? baseColor
-                              : baseColor.withValues(alpha: 0.4),
-                          width: 1.5,
-                        ),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            isComplete ? Icons.verified : situation.iconData,
-                            size: 18,
-                            color: isSelected ? Colors.white : baseColor,
-                          ),
-                          const SizedBox(width: 8),
-                          Flexible(
-                            child: Text(
-                              situation.name,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                fontSize: 15,
-                                fontWeight: FontWeight.bold,
-                                color: isSelected ? Colors.white : baseColor,
-                              ),
-                            ),
-                          ),
-                        ],
+                  }
+                  return true;
+                },
+                onAcceptWithDetails: (_) {
+                  widget.onSituationsChanged(widget.situations);
+                },
+                builder: (context, candidateData, rejectedData) {
+                  return LongPressDraggable<String>(
+                    data: situation.id,
+                    delay: const Duration(milliseconds: 350),
+                    onDragStarted: () {
+                      HapticFeedback.mediumImpact();
+                      setState(() {
+                        if (!_isMultiSelectMode) {
+                          _isMultiSelectMode = true;
+                          _multiSelectedIds.add(situation.id);
+                        }
+                      });
+                    },
+                    onDragEnd: (_) {
+                      widget.onSituationsChanged(widget.situations);
+                    },
+                    feedback: Transform.scale(
+                      scale: 1.06,
+                      child: _buildSituationChipContent(
+                        situation,
+                        isSelected: isSelected,
+                        isMultiSelected: isMultiSelected,
+                        isFeedback: true,
                       ),
                     ),
-                  ),
-                ),
+                    childWhenDragging: Opacity(
+                      opacity: 0.3,
+                      child: _buildSituationChipContent(
+                        situation,
+                        isSelected: isSelected,
+                        isMultiSelected: isMultiSelected,
+                      ),
+                    ),
+                    child: GestureDetector(
+                      onTap: () {
+                        HapticFeedback.selectionClick();
+                        setState(() {
+                          if (_isMultiSelectMode) {
+                            if (_multiSelectedIds.contains(situation.id)) {
+                              _multiSelectedIds.remove(situation.id);
+                              if (_multiSelectedIds.isEmpty) {
+                                _isMultiSelectMode = false;
+                              }
+                            } else {
+                              _multiSelectedIds.add(situation.id);
+                            }
+                          } else {
+                            if (_selectedSituationId == situation.id) {
+                              _selectedSituationId = null;
+                            } else {
+                              _selectedSituationId = situation.id;
+                            }
+                          }
+                        });
+                      },
+                      child: _buildSituationChipContent(
+                        situation,
+                        isSelected: isSelected,
+                        isMultiSelected: isMultiSelected,
+                      ),
+                    ),
+                  );
+                },
               );
             }).toList(),
           ),
@@ -743,7 +939,7 @@ class _SituationScreenState extends State<SituationScreen> {
                   SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      '팁: 상황 버튼을 눌러 소지품을 확인하고, 좌우로 밀어 체크하거나 삭제하세요.',
+                      '팁: 상황 버튼을 꾹 누르면 순서 변경 및 다중 삭제가 가능합니다.',
                       style: TextStyle(fontSize: 12),
                     ),
                   ),
@@ -805,11 +1001,23 @@ class _SituationScreenState extends State<SituationScreen> {
           ],
         ],
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _showSituationDialog(),
-        icon: const Icon(Icons.add),
-        label: const Text('새 상황 추가'),
-      ),
+      floatingActionButton: _isMultiSelectMode
+          ? FloatingActionButton.extended(
+              backgroundColor: Colors.redAccent,
+              foregroundColor: Colors.white,
+              onPressed: _deleteSelectedSituations,
+              icon: const Icon(Icons.delete_outline),
+              label: Text(
+                _multiSelectedIds.isEmpty
+                    ? '선택 취소'
+                    : '${_multiSelectedIds.length}개 상황 삭제',
+              ),
+            )
+          : FloatingActionButton.extended(
+              onPressed: () => _showSituationDialog(),
+              icon: const Icon(Icons.add),
+              label: const Text('새 상황 추가'),
+            ),
     );
   }
 }
