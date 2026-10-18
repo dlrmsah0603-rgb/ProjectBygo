@@ -1,8 +1,15 @@
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:table_calendar/table_calendar.dart';
 import '../models/schedule_model.dart';
 import '../models/situation_model.dart';
+
+enum CalendarViewStage {
+  twoWeeks, // 0: 2주 보기
+  month, // 1: 한달 보기 (기본)
+  expanded, // 2: 캘린더 확장 (바 최하단 위치)
+}
 
 class CalendarScreen extends StatefulWidget {
   final List<Schedule> schedules;
@@ -25,14 +32,21 @@ class CalendarScreen extends StatefulWidget {
 }
 
 class _CalendarScreenState extends State<CalendarScreen> {
-  CalendarFormat _calendarFormat = CalendarFormat.month;
+  CalendarViewStage _viewStage = CalendarViewStage.month;
   DateTime _focusedDay = DateTime.now();
   DateTime? _selectedDay = DateTime.now();
   String? _selectedFilterTag;
   String _searchQuery = '';
   bool _isSearching = false;
-  bool _isCalendarExpanded = false; // 캘린더 확장 상태
   final TextEditingController _searchController = TextEditingController();
+
+  // 실시간 드래그 추적 상태
+  bool _isDraggingBar = false;
+  double? _dragCalendarHeight;
+
+  static const double _baseRowHeight = 58.0;
+  static const double _calendarChromeHeight = 78.0; // 헤더(56) + 요일표시줄(22)
+  static const double _handleBarHeight = 52.0;
 
   static const List<String> _weekdayLabels = [
     '월',
@@ -48,6 +62,137 @@ class _CalendarScreenState extends State<CalendarScreen> {
   void dispose() {
     _searchController.dispose();
     super.dispose();
+  }
+
+  String _stageLabel(CalendarViewStage stage) {
+    switch (stage) {
+      case CalendarViewStage.twoWeeks:
+        return '2주';
+      case CalendarViewStage.month:
+        return '한달';
+      case CalendarViewStage.expanded:
+        return '확장';
+    }
+  }
+
+  int _getWeekRowCount(DateTime monthDate) {
+    final firstOfMonth = DateTime(monthDate.year, monthDate.month, 1);
+    final lastOfMonth = DateTime(monthDate.year, monthDate.month + 1, 0);
+    final firstDayOffset = firstOfMonth.weekday % 7; // 일요일 시작 기준
+    final totalCells = firstDayOffset + lastOfMonth.day;
+    return (totalCells / 7.0).ceil().clamp(4, 6);
+  }
+
+  /// 각 단계(2주 / 한달 / 확장)에서의 캘린더 영역 높이(= 바의 Y 위치) 계산
+  Map<CalendarViewStage, double> _getStageHeights(double availableHeight) {
+    final weekRows = _getWeekRowCount(_focusedDay);
+    final maxCalendarHeight =
+        math.max(120.0, availableHeight - _handleBarHeight);
+
+    final rawTwoWeeks = _calendarChromeHeight + (_baseRowHeight * 2);
+    final rawMonth = _calendarChromeHeight + (_baseRowHeight * weekRows);
+
+    final hExpanded = maxCalendarHeight;
+    final hMonth = rawMonth.clamp(120.0, hExpanded);
+    final hTwoWeeks = rawTwoWeeks.clamp(120.0, hMonth);
+
+    return {
+      CalendarViewStage.twoWeeks: hTwoWeeks,
+      CalendarViewStage.month: hMonth,
+      CalendarViewStage.expanded: hExpanded,
+    };
+  }
+
+  /// 주어진 바 위치(height)에서 가장 가까운 단계 반환
+  CalendarViewStage _findNearestStage(
+    double currentHeight,
+    Map<CalendarViewStage, double> stageHeights,
+  ) {
+    CalendarViewStage nearest = _viewStage;
+    double minDistance = double.infinity;
+
+    for (final entry in stageHeights.entries) {
+      final distance = (currentHeight - entry.value).abs();
+      if (distance < minDistance) {
+        minDistance = distance;
+        nearest = entry.key;
+      }
+    }
+    return nearest;
+  }
+
+  void _setViewStage(CalendarViewStage newStage) {
+    HapticFeedback.selectionClick();
+    setState(() {
+      _isDraggingBar = false;
+      _dragCalendarHeight = null;
+      _viewStage = newStage;
+    });
+  }
+
+  void _stepViewStage(int delta) {
+    final nextIndex = (_viewStage.index + delta)
+        .clamp(0, CalendarViewStage.values.length - 1);
+    if (nextIndex == _viewStage.index) return;
+    _setViewStage(CalendarViewStage.values[nextIndex]);
+  }
+
+  void _onBarDragStart(
+    DragStartDetails details,
+    Map<CalendarViewStage, double> stageHeights,
+  ) {
+    setState(() {
+      _isDraggingBar = true;
+      _dragCalendarHeight = stageHeights[_viewStage]!;
+    });
+  }
+
+  void _onBarDragUpdate(
+    DragUpdateDetails details,
+    Map<CalendarViewStage, double> stageHeights,
+  ) {
+    final minH = stageHeights[CalendarViewStage.twoWeeks]!;
+    final maxH = stageHeights[CalendarViewStage.expanded]!;
+    final prevH = _dragCalendarHeight ?? stageHeights[_viewStage]!;
+    final nextH = (prevH + details.delta.dy).clamp(minH, maxH);
+
+    // 드래그 중 가장 가까운 단계가 바뀔 때 가벼운 햅틱 피드백 제공
+    final prevNearest = _findNearestStage(prevH, stageHeights);
+    final nextNearest = _findNearestStage(nextH, stageHeights);
+    if (prevNearest != nextNearest) {
+      HapticFeedback.selectionClick();
+    }
+
+    setState(() {
+      _isDraggingBar = true;
+      _dragCalendarHeight = nextH;
+    });
+  }
+
+  void _onBarDragEnd(
+    DragEndDetails details,
+    Map<CalendarViewStage, double> stageHeights,
+  ) {
+    final currentH = _dragCalendarHeight ?? stageHeights[_viewStage]!;
+    final nearestStage = _findNearestStage(currentH, stageHeights);
+
+    HapticFeedback.lightImpact();
+    setState(() {
+      _viewStage = nearestStage;
+      _isDraggingBar = false;
+      _dragCalendarHeight = null;
+    });
+  }
+
+  void _onBarDragCancel(Map<CalendarViewStage, double> stageHeights) {
+    final currentH = _dragCalendarHeight ?? stageHeights[_viewStage]!;
+    final nearestStage = _findNearestStage(currentH, stageHeights);
+
+    setState(() {
+      _viewStage = nearestStage;
+      _isDraggingBar = false;
+      _dragCalendarHeight = null;
+    });
   }
 
   List<String> get _allAvailableTags {
@@ -82,14 +227,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
 
     events.sort((a, b) => a.time.compareTo(b.time));
     return events;
-  }
-
-  void _setCalendarExpanded(bool expanded) {
-    if (_isCalendarExpanded == expanded) return;
-    HapticFeedback.selectionClick();
-    setState(() {
-      _isCalendarExpanded = expanded;
-    });
   }
 
   void _deleteSchedule(Schedule schedule) {
@@ -489,28 +626,142 @@ class _CalendarScreenState extends State<CalendarScreen> {
     );
   }
 
-  Widget _buildSchedulePanelHeader(DateTime activeDay, int eventCount) {
+  Widget _buildTableCalendar({
+    required CalendarFormat format,
+    required double rowHeight,
+    required int maxMarkers,
+    required Map<CalendarViewStage, double> stageHeights,
+  }) {
+    return GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onVerticalDragStart: (d) => _onBarDragStart(d, stageHeights),
+      onVerticalDragUpdate: (d) => _onBarDragUpdate(d, stageHeights),
+      onVerticalDragEnd: (d) => _onBarDragEnd(d, stageHeights),
+      onVerticalDragCancel: () => _onBarDragCancel(stageHeights),
+      child: TableCalendar<Schedule>(
+        firstDay: DateTime.utc(2020, 1, 1),
+        lastDay: DateTime.utc(2035, 12, 31),
+        focusedDay: _focusedDay,
+        calendarFormat: format,
+        availableGestures: AvailableGestures.horizontalSwipe,
+        rowHeight: rowHeight,
+        daysOfWeekHeight: 22,
+        selectedDayPredicate: (day) => isSameDay(_selectedDay, day),
+        eventLoader: _getEventsForDay,
+        onDaySelected: (selectedDay, focusedDay) {
+          HapticFeedback.selectionClick();
+          setState(() {
+            _selectedDay = selectedDay;
+            _focusedDay = focusedDay;
+          });
+        },
+        onDayLongPressed: (selectedDay, focusedDay) {
+          HapticFeedback.mediumImpact();
+          setState(() {
+            _selectedDay = selectedDay;
+            _focusedDay = focusedDay;
+          });
+          _showScheduleDialog(defaultDate: selectedDay);
+        },
+        onPageChanged: (focusedDay) {
+          setState(() {
+            _focusedDay = focusedDay;
+          });
+        },
+        headerStyle: const HeaderStyle(
+          formatButtonVisible: false,
+          titleCentered: true,
+          headerPadding: EdgeInsets.symmetric(vertical: 4),
+          headerMargin: EdgeInsets.zero,
+        ),
+        calendarStyle: const CalendarStyle(
+          cellMargin: EdgeInsets.all(2),
+          todayDecoration: BoxDecoration(
+            color: Colors.indigoAccent,
+            shape: BoxShape.circle,
+          ),
+          selectedDecoration: BoxDecoration(
+            color: Colors.indigo,
+            shape: BoxShape.circle,
+          ),
+        ),
+        calendarBuilders: CalendarBuilders(
+          markerBuilder: (context, date, events) {
+            if (events.isEmpty) return const SizedBox.shrink();
+            return Padding(
+              padding: const EdgeInsets.only(
+                top: 30,
+                left: 1,
+                right: 1,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: events.take(maxMarkers).map((sc) {
+                  final sit = _findSituationByTag(sc.tag);
+                  final badgeColor = sit?.color ?? Colors.blue;
+                  return Container(
+                    width: double.infinity,
+                    margin: const EdgeInsets.symmetric(vertical: 0.5),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 2,
+                      vertical: 0.5,
+                    ),
+                    decoration: BoxDecoration(
+                      color: badgeColor.withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(3),
+                    ),
+                    child: Text(
+                      sc.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 8.5,
+                        height: 1.1,
+                        fontWeight: FontWeight.w600,
+                        color: badgeColor,
+                      ),
+                    ),
+                  );
+                }).toList(),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSchedulePanelHeader({
+    required DateTime activeDay,
+    required int eventCount,
+    required CalendarViewStage activeStageHighlight,
+    required Map<CalendarViewStage, double> stageHeights,
+  }) {
+    final primaryColor = Theme.of(context).colorScheme.primary;
+
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
-      onTap: () => _setCalendarExpanded(!_isCalendarExpanded),
-      onVerticalDragEnd: (details) {
-        final velocity = details.primaryVelocity ?? 0;
-        if (velocity > 150) {
-          // 아래로 스와이프 -> 캘린더 확장 (일정 영역 접기)
-          _setCalendarExpanded(true);
-        } else if (velocity < -150) {
-          // 위로 스와이프 -> 일정 영역 펼치기
-          _setCalendarExpanded(false);
+      onVerticalDragStart: (d) => _onBarDragStart(d, stageHeights),
+      onVerticalDragUpdate: (d) => _onBarDragUpdate(d, stageHeights),
+      onVerticalDragEnd: (d) => _onBarDragEnd(d, stageHeights),
+      onVerticalDragCancel: () => _onBarDragCancel(stageHeights),
+      onTap: () {
+        if (_viewStage == CalendarViewStage.expanded) {
+          _setViewStage(CalendarViewStage.month);
+        } else {
+          _setViewStage(CalendarViewStage.expanded);
         }
       },
       child: Container(
+        height: _handleBarHeight,
         width: double.infinity,
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+        padding: const EdgeInsets.symmetric(horizontal: 14),
         decoration: BoxDecoration(
           color: Theme.of(context)
               .colorScheme
               .surfaceContainerHighest
-              .withValues(alpha: 0.35),
+              .withValues(alpha: _isDraggingBar ? 0.65 : 0.4),
           border: Border(
             top: BorderSide(
               color: Colors.grey.withValues(alpha: 0.25),
@@ -523,14 +774,16 @@ class _CalendarScreenState extends State<CalendarScreen> {
           ),
         ),
         child: Column(
-          mainAxisSize: MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Container(
-              width: 36,
+              width: 40,
               height: 4,
               margin: const EdgeInsets.only(bottom: 6),
               decoration: BoxDecoration(
-                color: Colors.grey.withValues(alpha: 0.45),
+                color: _isDraggingBar
+                    ? primaryColor
+                    : Colors.grey.withValues(alpha: 0.5),
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
@@ -539,7 +792,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                 Icon(
                   Icons.event_note,
                   size: 16,
-                  color: Theme.of(context).colorScheme.primary,
+                  color: primaryColor,
                 ),
                 const SizedBox(width: 6),
                 Text(
@@ -550,25 +803,270 @@ class _CalendarScreenState extends State<CalendarScreen> {
                   ),
                 ),
                 const Spacer(),
-                Text(
-                  _isCalendarExpanded ? '위로 밀어 일정 보기' : '아래로 밀어 캘린더 확장',
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: Colors.grey.shade600,
+                Container(
+                  padding: const EdgeInsets.all(2),
+                  decoration: BoxDecoration(
+                    color: Colors.grey.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(10),
                   ),
-                ),
-                const SizedBox(width: 4),
-                Icon(
-                  _isCalendarExpanded
-                      ? Icons.keyboard_arrow_up
-                      : Icons.keyboard_arrow_down,
-                  size: 18,
-                  color: Colors.grey.shade600,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: CalendarViewStage.values.map((stage) {
+                      final isSelected = activeStageHighlight == stage;
+                      return GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () => _setViewStage(stage),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 3,
+                          ),
+                          decoration: BoxDecoration(
+                            color:
+                                isSelected ? primaryColor : Colors.transparent,
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text(
+                            _stageLabel(stage),
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: isSelected
+                                  ? FontWeight.bold
+                                  : FontWeight.w500,
+                              color: isSelected
+                                  ? Colors.white
+                                  : Colors.grey.shade700,
+                            ),
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                  ),
                 ),
               ],
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildScheduleList(
+    List<Schedule> selectedEvents,
+    Map<CalendarViewStage, double> stageHeights,
+  ) {
+    if (selectedEvents.isEmpty) {
+      return GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onVerticalDragStart: (d) => _onBarDragStart(d, stageHeights),
+        onVerticalDragUpdate: (d) => _onBarDragUpdate(d, stageHeights),
+        onVerticalDragEnd: (d) => _onBarDragEnd(d, stageHeights),
+        onVerticalDragCancel: () => _onBarDragCancel(stageHeights),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            if (constraints.maxHeight < 40) return const SizedBox.shrink();
+            return Center(
+              child: SingleChildScrollView(
+                physics: const NeverScrollableScrollPhysics(),
+                child: Text(
+                  '선택한 날짜에 일정이 없습니다.\n(바를 잡고 움직여 2주 / 한달 / 확장 조절)',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.grey.shade600,
+                    fontSize: 13,
+                  ),
+                ),
+              ),
+            );
+          },
+        ),
+      );
+    }
+
+    return NotificationListener<ScrollNotification>(
+      onNotification: (notification) {
+        if (!_isDraggingBar && notification is OverscrollNotification) {
+          if (notification.overscroll < -16) {
+            _stepViewStage(1);
+            return true;
+          }
+          if (notification.overscroll > 16) {
+            _stepViewStage(-1);
+            return true;
+          }
+        }
+        return false;
+      },
+      child: ListView.builder(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 80),
+        itemCount: selectedEvents.length,
+        itemBuilder: (context, index) {
+          final sc = selectedEvents[index];
+          final linkedSit = _findSituationByTag(sc.tag);
+          final isComplete = linkedSit?.isAllChecked ?? false;
+          final cardColor =
+              isComplete ? Colors.green : (linkedSit?.color ?? Colors.blue);
+
+          return Dismissible(
+            key: ValueKey('${sc.id}_${sc.date}'),
+            direction: DismissDirection.endToStart,
+            background: Container(
+              margin: const EdgeInsets.symmetric(vertical: 4),
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              alignment: Alignment.centerRight,
+              decoration: BoxDecoration(
+                color: Colors.redAccent,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Icon(
+                Icons.delete_outline,
+                color: Colors.white,
+              ),
+            ),
+            onDismissed: (_) => _deleteSchedule(sc),
+            child: Card(
+              margin: const EdgeInsets.symmetric(vertical: 4),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+                side: BorderSide(
+                  color: cardColor.withValues(alpha: 0.35),
+                ),
+              ),
+              child: ListTile(
+                onTap: () {
+                  if (linkedSit != null) {
+                    _showChecklistBottomSheet(sc, linkedSit);
+                  } else {
+                    _showScheduleDialog(existing: sc);
+                  }
+                },
+                leading: CircleAvatar(
+                  backgroundColor: cardColor.withValues(alpha: 0.15),
+                  child: Icon(
+                    isComplete
+                        ? Icons.verified
+                        : (linkedSit?.iconData ?? Icons.event),
+                    color: cardColor,
+                  ),
+                ),
+                title: Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        sc.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                    if (sc.tag.isNotEmpty) ...[
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: cardColor.withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Text(
+                          '#${sc.tag}',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: cardColor,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+                subtitle: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        const Icon(Icons.access_time, size: 14),
+                        const SizedBox(width: 4),
+                        Text(sc.time),
+                        if (sc.isRepeating) ...[
+                          const SizedBox(width: 8),
+                          const Icon(Icons.repeat, size: 14),
+                          const SizedBox(width: 2),
+                          Text(
+                            sc.repeatWeekdays
+                                .map((w) => _weekdayLabels[w - 1])
+                                .join('·'),
+                            style: const TextStyle(fontSize: 12),
+                          ),
+                        ],
+                      ],
+                    ),
+                    if (linkedSit != null && linkedSit.items.isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(4),
+                              child: LinearProgressIndicator(
+                                value: linkedSit.progress,
+                                minHeight: 5,
+                                backgroundColor:
+                                    Colors.grey.withValues(alpha: 0.2),
+                                valueColor:
+                                    AlwaysStoppedAnimation<Color>(cardColor),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            '소지품 ${linkedSit.checkedCount}/${linkedSit.items.length}',
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                              color: cardColor,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ],
+                ),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (linkedSit != null)
+                      IconButton(
+                        icon: Icon(
+                          Icons.checklist_rtl,
+                          color: cardColor,
+                        ),
+                        tooltip: '소지품 체크리스트 열기',
+                        onPressed: () => _showChecklistBottomSheet(
+                          sc,
+                          linkedSit,
+                        ),
+                      ),
+                    IconButton(
+                      icon: const Icon(
+                        Icons.edit_outlined,
+                        size: 20,
+                      ),
+                      tooltip: '일정 수정',
+                      onPressed: () => _showScheduleDialog(existing: sc),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -673,7 +1171,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                   const SizedBox(width: 4),
                   Expanded(
                     child: Text(
-                      '팁: 날짜를 길게 누르면 일정을 바로 추가하고, 하단 일정 창을 아래로 밀면 캘린더가 넓어집니다.',
+                      '팁: 바를 잡고 위·아래로 움직여 2주 / 한달 / 확장 위치로 조절하세요.',
                       style: TextStyle(
                         fontSize: 11,
                         color: Colors.grey.shade600,
@@ -686,368 +1184,78 @@ class _CalendarScreenState extends State<CalendarScreen> {
           Expanded(
             child: LayoutBuilder(
               builder: (context, constraints) {
-                // 캘린더 확장 시 남은 화면 높이에 맞춰 셀 높이를 자동 계산 (오버플로우 방지)
-                final double expandedRowHeight =
-                    ((constraints.maxHeight - 135) / 6).clamp(58.0, 92.0);
-                final double activeRowHeight =
-                    _isCalendarExpanded ? expandedRowHeight : 58.0;
-                final int maxMarkers =
-                    (_isCalendarExpanded && activeRowHeight >= 72) ? 3 : 2;
+                final availableHeight = constraints.maxHeight;
+                final stageHeights = _getStageHeights(availableHeight);
+                final hTwoWeeks = stageHeights[CalendarViewStage.twoWeeks]!;
+                final hMonth = stageHeights[CalendarViewStage.month]!;
+                final hExpanded = stageHeights[CalendarViewStage.expanded]!;
+
+                final targetCalendarHeight = _isDraggingBar
+                    ? (_dragCalendarHeight ?? stageHeights[_viewStage]!)
+                        .clamp(hTwoWeeks, hExpanded)
+                    : stageHeights[_viewStage]!;
+
+                final activeStageHighlight = _isDraggingBar
+                    ? _findNearestStage(targetCalendarHeight, stageHeights)
+                    : _viewStage;
+
+                final weekRows = _getWeekRowCount(_focusedDay);
 
                 return Column(
                   children: [
-                    TableCalendar<Schedule>(
-                      firstDay: DateTime.utc(2020, 1, 1),
-                      lastDay: DateTime.utc(2035, 12, 31),
-                      focusedDay: _focusedDay,
-                      calendarFormat: _calendarFormat,
-                      rowHeight: activeRowHeight,
-                      selectedDayPredicate: (day) =>
-                          isSameDay(_selectedDay, day),
-                      eventLoader: _getEventsForDay,
-                      onDaySelected: (selectedDay, focusedDay) {
-                        HapticFeedback.selectionClick();
-                        setState(() {
-                          _selectedDay = selectedDay;
-                          _focusedDay = focusedDay;
-                        });
-                      },
-                      onDayLongPressed: (selectedDay, focusedDay) {
-                        HapticFeedback.mediumImpact();
-                        setState(() {
-                          _selectedDay = selectedDay;
-                          _focusedDay = focusedDay;
-                        });
-                        _showScheduleDialog(defaultDate: selectedDay);
-                      },
-                      onFormatChanged: (format) {
-                        setState(() => _calendarFormat = format);
-                      },
-                      onPageChanged: (focusedDay) {
-                        _focusedDay = focusedDay;
-                      },
-                      headerStyle: const HeaderStyle(
-                        formatButtonShowsNext: false,
-                        titleCentered: true,
-                      ),
-                      calendarStyle: const CalendarStyle(
-                        cellMargin: EdgeInsets.all(2),
-                        todayDecoration: BoxDecoration(
-                          color: Colors.indigoAccent,
-                          shape: BoxShape.circle,
-                        ),
-                        selectedDecoration: BoxDecoration(
-                          color: Colors.indigo,
-                          shape: BoxShape.circle,
-                        ),
-                      ),
-                      calendarBuilders: CalendarBuilders(
-                        markerBuilder: (context, date, events) {
-                          if (events.isEmpty) return const SizedBox.shrink();
-                          return Padding(
-                            padding: const EdgeInsets.only(
-                              top: 30,
-                              left: 1,
-                              right: 1,
-                            ),
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: events.take(maxMarkers).map((sc) {
-                                final sit = _findSituationByTag(sc.tag);
-                                final badgeColor = sit?.color ?? Colors.blue;
-                                return Container(
-                                  width: double.infinity,
-                                  margin:
-                                      const EdgeInsets.symmetric(vertical: 0.5),
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 2,
-                                    vertical: 0.5,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: badgeColor.withValues(alpha: 0.2),
-                                    borderRadius: BorderRadius.circular(3),
-                                  ),
-                                  child: Text(
-                                    sc.title,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    textAlign: TextAlign.center,
-                                    style: TextStyle(
-                                      fontSize: 8.5,
-                                      height: 1.1,
-                                      fontWeight: FontWeight.w600,
-                                      color: badgeColor,
-                                    ),
-                                  ),
-                                );
-                              }).toList(),
+                    AnimatedContainer(
+                      duration: _isDraggingBar
+                          ? Duration.zero
+                          : const Duration(milliseconds: 220),
+                      curve: Curves.easeOutCubic,
+                      height: targetCalendarHeight,
+                      child: LayoutBuilder(
+                        builder: (context, calConstraints) {
+                          final currentH = calConstraints.maxHeight;
+                          final twoWeeksMidpoint = (hTwoWeeks + hMonth) / 2.0;
+
+                          final CalendarFormat activeFormat =
+                              currentH <= twoWeeksMidpoint
+                                  ? CalendarFormat.twoWeeks
+                                  : CalendarFormat.month;
+
+                          final double dynamicRowHeight = currentH > hMonth
+                              ? ((currentH - _calendarChromeHeight) / weekRows)
+                                  .clamp(_baseRowHeight, 160.0)
+                              : _baseRowHeight;
+
+                          final int maxMarkers = dynamicRowHeight >= 90
+                              ? 4
+                              : (dynamicRowHeight >= 70 ? 3 : 2);
+
+                          return ClipRect(
+                            child: SingleChildScrollView(
+                              physics: const NeverScrollableScrollPhysics(),
+                              child: _buildTableCalendar(
+                                format: activeFormat,
+                                rowHeight: dynamicRowHeight,
+                                maxMarkers: maxMarkers,
+                                stageHeights: stageHeights,
+                              ),
                             ),
                           );
                         },
                       ),
                     ),
-                    _buildSchedulePanelHeader(activeDay, selectedEvents.length),
-                    if (!_isCalendarExpanded)
-                      Expanded(
-                        child: selectedEvents.isEmpty
-                            ? GestureDetector(
-                                behavior: HitTestBehavior.opaque,
-                                onVerticalDragEnd: (details) {
-                                  if ((details.primaryVelocity ?? 0) > 150) {
-                                    _setCalendarExpanded(true);
-                                  }
-                                },
-                                child: Center(
-                                  child: Text(
-                                    '선택한 날짜에 일정이 없습니다.\n(아래로 스와이프하여 캘린더 넓게 보기)',
-                                    textAlign: TextAlign.center,
-                                    style: TextStyle(
-                                      color: Colors.grey.shade600,
-                                      fontSize: 13,
-                                    ),
-                                  ),
-                                ),
-                              )
-                            : NotificationListener<ScrollNotification>(
-                                onNotification: (notification) {
-                                  // 리스트 최상단에서 아래로 당길 때 캘린더 확장
-                                  if (notification is OverscrollNotification &&
-                                      notification.overscroll < -14) {
-                                    _setCalendarExpanded(true);
-                                    return true;
-                                  }
-                                  return false;
-                                },
-                                child: ListView.builder(
-                                  physics: const AlwaysScrollableScrollPhysics(),
-                                  padding:
-                                      const EdgeInsets.fromLTRB(12, 8, 12, 80),
-                                  itemCount: selectedEvents.length,
-                                  itemBuilder: (context, index) {
-                                    final sc = selectedEvents[index];
-                                    final linkedSit =
-                                        _findSituationByTag(sc.tag);
-                                    final isComplete =
-                                        linkedSit?.isAllChecked ?? false;
-                                    final cardColor = isComplete
-                                        ? Colors.green
-                                        : (linkedSit?.color ?? Colors.blue);
-
-                                    return Dismissible(
-                                      key: ValueKey('${sc.id}_${sc.date}'),
-                                      direction: DismissDirection.endToStart,
-                                      background: Container(
-                                        margin: const EdgeInsets.symmetric(
-                                          vertical: 4,
-                                        ),
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 20,
-                                        ),
-                                        alignment: Alignment.centerRight,
-                                        decoration: BoxDecoration(
-                                          color: Colors.redAccent,
-                                          borderRadius:
-                                              BorderRadius.circular(12),
-                                        ),
-                                        child: const Icon(
-                                          Icons.delete_outline,
-                                          color: Colors.white,
-                                        ),
-                                      ),
-                                      onDismissed: (_) => _deleteSchedule(sc),
-                                      child: Card(
-                                        margin: const EdgeInsets.symmetric(
-                                          vertical: 4,
-                                        ),
-                                        shape: RoundedRectangleBorder(
-                                          borderRadius:
-                                              BorderRadius.circular(12),
-                                          side: BorderSide(
-                                            color: cardColor.withValues(
-                                              alpha: 0.35,
-                                            ),
-                                          ),
-                                        ),
-                                        child: ListTile(
-                                          onTap: () {
-                                            if (linkedSit != null) {
-                                              _showChecklistBottomSheet(
-                                                sc,
-                                                linkedSit,
-                                              );
-                                            } else {
-                                              _showScheduleDialog(existing: sc);
-                                            }
-                                          },
-                                          leading: CircleAvatar(
-                                            backgroundColor: cardColor
-                                                .withValues(alpha: 0.15),
-                                            child: Icon(
-                                              isComplete
-                                                  ? Icons.verified
-                                                  : (linkedSit?.iconData ??
-                                                      Icons.event),
-                                              color: cardColor,
-                                            ),
-                                          ),
-                                          title: Row(
-                                            children: [
-                                              Flexible(
-                                                child: Text(
-                                                  sc.title,
-                                                  maxLines: 1,
-                                                  overflow:
-                                                      TextOverflow.ellipsis,
-                                                  style: const TextStyle(
-                                                    fontWeight: FontWeight.bold,
-                                                  ),
-                                                ),
-                                              ),
-                                              if (sc.tag.isNotEmpty) ...[
-                                                const SizedBox(width: 8),
-                                                Container(
-                                                  padding: const EdgeInsets
-                                                      .symmetric(
-                                                    horizontal: 8,
-                                                    vertical: 2,
-                                                  ),
-                                                  decoration: BoxDecoration(
-                                                    color: cardColor.withValues(
-                                                      alpha: 0.15,
-                                                    ),
-                                                    borderRadius:
-                                                        BorderRadius.circular(
-                                                      10,
-                                                    ),
-                                                  ),
-                                                  child: Text(
-                                                    '#${sc.tag}',
-                                                    style: TextStyle(
-                                                      fontSize: 11,
-                                                      color: cardColor,
-                                                      fontWeight:
-                                                          FontWeight.w600,
-                                                    ),
-                                                  ),
-                                                ),
-                                              ],
-                                            ],
-                                          ),
-                                          subtitle: Column(
-                                            crossAxisAlignment:
-                                                CrossAxisAlignment.start,
-                                            children: [
-                                              const SizedBox(height: 4),
-                                              Row(
-                                                children: [
-                                                  const Icon(
-                                                    Icons.access_time,
-                                                    size: 14,
-                                                  ),
-                                                  const SizedBox(width: 4),
-                                                  Text(sc.time),
-                                                  if (sc.isRepeating) ...[
-                                                    const SizedBox(width: 8),
-                                                    const Icon(
-                                                      Icons.repeat,
-                                                      size: 14,
-                                                    ),
-                                                    const SizedBox(width: 2),
-                                                    Text(
-                                                      sc.repeatWeekdays
-                                                          .map(
-                                                            (w) =>
-                                                                _weekdayLabels[
-                                                                    w - 1],
-                                                          )
-                                                          .join('·'),
-                                                      style: const TextStyle(
-                                                        fontSize: 12,
-                                                      ),
-                                                    ),
-                                                  ],
-                                                ],
-                                              ),
-                                              if (linkedSit != null &&
-                                                  linkedSit
-                                                      .items.isNotEmpty) ...[
-                                                const SizedBox(height: 6),
-                                                Row(
-                                                  children: [
-                                                    Expanded(
-                                                      child: ClipRRect(
-                                                        borderRadius:
-                                                            BorderRadius
-                                                                .circular(4),
-                                                        child:
-                                                            LinearProgressIndicator(
-                                                          value: linkedSit
-                                                              .progress,
-                                                          minHeight: 5,
-                                                          backgroundColor: Colors
-                                                              .grey
-                                                              .withValues(
-                                                            alpha: 0.2,
-                                                          ),
-                                                          valueColor:
-                                                              AlwaysStoppedAnimation<
-                                                                  Color>(
-                                                            cardColor,
-                                                          ),
-                                                        ),
-                                                      ),
-                                                    ),
-                                                    const SizedBox(width: 8),
-                                                    Text(
-                                                      '소지품 ${linkedSit.checkedCount}/${linkedSit.items.length}',
-                                                      style: TextStyle(
-                                                        fontSize: 11,
-                                                        fontWeight:
-                                                            FontWeight.bold,
-                                                        color: cardColor,
-                                                      ),
-                                                    ),
-                                                  ],
-                                                ),
-                                              ],
-                                            ],
-                                          ),
-                                          trailing: Row(
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: [
-                                              if (linkedSit != null)
-                                                IconButton(
-                                                  icon: Icon(
-                                                    Icons.checklist_rtl,
-                                                    color: cardColor,
-                                                  ),
-                                                  tooltip: '소지품 체크리스트 열기',
-                                                  onPressed: () =>
-                                                      _showChecklistBottomSheet(
-                                                    sc,
-                                                    linkedSit,
-                                                  ),
-                                                ),
-                                              IconButton(
-                                                icon: const Icon(
-                                                  Icons.edit_outlined,
-                                                  size: 20,
-                                                ),
-                                                tooltip: '일정 수정',
-                                                onPressed: () =>
-                                                    _showScheduleDialog(
-                                                  existing: sc,
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                      ),
-                                    );
-                                  },
-                                ),
-                              ),
+                    _buildSchedulePanelHeader(
+                      activeDay: activeDay,
+                      eventCount: selectedEvents.length,
+                      activeStageHighlight: activeStageHighlight,
+                      stageHeights: stageHeights,
+                    ),
+                    Expanded(
+                      child: ClipRect(
+                        child: _buildScheduleList(
+                          selectedEvents,
+                          stageHeights,
+                        ),
                       ),
+                    ),
                   ],
                 );
               },
@@ -1055,10 +1263,15 @@ class _CalendarScreenState extends State<CalendarScreen> {
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _showScheduleDialog(),
-        icon: const Icon(Icons.add),
-        label: const Text('일정 추가'),
+      floatingActionButton: Padding(
+        padding: EdgeInsets.only(
+          bottom: _viewStage == CalendarViewStage.expanded ? 48.0 : 0.0,
+        ),
+        child: FloatingActionButton.extended(
+          onPressed: () => _showScheduleDialog(),
+          icon: const Icon(Icons.add),
+          label: const Text('일정 추가'),
+        ),
       ),
     );
   }
