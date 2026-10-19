@@ -11,6 +11,18 @@ enum CalendarViewStage {
   expanded, // 2: 캘린더 확장 (바 최하단 위치)
 }
 
+enum _RepeatEndType {
+  none, // 계속 반복
+  untilDate, // 종료일 지정
+  afterCount, // 반복 횟수 지정
+}
+
+enum _RepeatActionScope {
+  onlyThis, // 이 일정만
+  thisAndFuture, // 이 일정 및 이후 일정
+  all, // 전체 반복 일정
+}
+
 class CalendarScreen extends StatefulWidget {
   final List<Schedule> schedules;
   final List<Situation> situations;
@@ -64,6 +76,12 @@ class _CalendarScreenState extends State<CalendarScreen> {
     super.dispose();
   }
 
+  DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
+
+  String _formatShortDate(DateTime d) => '${d.year}.${d.month}.${d.day}';
+
+  String _formatMonthDay(DateTime d) => '${d.month}월 ${d.day}일';
+
   String _stageLabel(CalendarViewStage stage) {
     switch (stage) {
       case CalendarViewStage.twoWeeks:
@@ -83,7 +101,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
     return (totalCells / 7.0).ceil().clamp(4, 6);
   }
 
-  /// 각 단계(2주 / 한달 / 확장)에서의 캘린더 영역 높이(= 바의 Y 위치) 계산
   Map<CalendarViewStage, double> _getStageHeights(double availableHeight) {
     final weekRows = _getWeekRowCount(_focusedDay);
     final maxCalendarHeight =
@@ -103,7 +120,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
     };
   }
 
-  /// 주어진 바 위치(height)에서 가장 가까운 단계 반환
   CalendarViewStage _findNearestStage(
     double currentHeight,
     Map<CalendarViewStage, double> stageHeights,
@@ -156,7 +172,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
     final prevH = _dragCalendarHeight ?? stageHeights[_viewStage]!;
     final nextH = (prevH + details.delta.dy).clamp(minH, maxH);
 
-    // 드래그 중 가장 가까운 단계가 바뀔 때 가벼운 햅틱 피드백 제공
     final prevNearest = _findNearestStage(prevH, stageHeights);
     final nextNearest = _findNearestStage(nextH, stageHeights);
     if (prevNearest != nextNearest) {
@@ -229,29 +244,36 @@ class _CalendarScreenState extends State<CalendarScreen> {
     return events;
   }
 
-  void _deleteSchedule(Schedule schedule) {
-    final originalIndex = widget.schedules.indexOf(schedule);
-    if (originalIndex == -1) return;
+  String _buildRepeatSummaryText(Schedule sc) {
+    final daysText =
+        sc.repeatWeekdays.map((w) => _weekdayLabels[w - 1]).join('·');
+    if (sc.repeatEndDate != null) {
+      return '$daysText (${_formatShortDate(sc.date)}~${_formatShortDate(sc.repeatEndDate!)})';
+    }
+    if (sc.repeatCount != null && sc.repeatCount! > 0) {
+      return '$daysText (총 ${sc.repeatCount}회)';
+    }
+    return daysText;
+  }
 
-    setState(() {
-      widget.schedules.removeAt(originalIndex);
-    });
-    HapticFeedback.mediumImpact();
-    widget.onSchedulesChanged(widget.schedules);
+  List<Schedule> _cloneSchedulesSnapshot() {
+    return widget.schedules.map((s) => s.copyWith()).toList();
+  }
 
+  void _showUndoSnackBar(String message, List<Schedule> snapshot) {
     ScaffoldMessenger.of(context).clearSnackBars();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text("'${schedule.title}' 일정이 삭제되었습니다."),
+        content: Text(message),
         behavior: SnackBarBehavior.floating,
         action: SnackBarAction(
           label: '실행 취소',
           onPressed: () {
             HapticFeedback.lightImpact();
             setState(() {
-              final insertIdx =
-                  originalIndex.clamp(0, widget.schedules.length);
-              widget.schedules.insert(insertIdx, schedule);
+              widget.schedules
+                ..clear()
+                ..addAll(snapshot);
             });
             widget.onSchedulesChanged(widget.schedules);
           },
@@ -260,16 +282,208 @@ class _CalendarScreenState extends State<CalendarScreen> {
     );
   }
 
-  void _showScheduleDialog({Schedule? existing, DateTime? defaultDate}) {
+  Future<_RepeatActionScope?> _showRepeatScopeDialog({
+    required String title,
+    required DateTime targetDate,
+    required String onlyThisLabel,
+    required String thisAndFutureLabel,
+    required String allLabel,
+    bool isDestructive = false,
+  }) {
+    final dateStr = _formatMonthDay(targetDate);
+    final accentColor = isDestructive
+        ? Colors.redAccent
+        : Theme.of(context).colorScheme.primary;
+
+    return showDialog<_RepeatActionScope>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: Text(title),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '선택한 날짜($dateStr) 기준으로 적용할 범위를 선택해 주세요.',
+                style: TextStyle(
+                  fontSize: 13,
+                  color: Colors.grey.shade700,
+                ),
+              ),
+              const SizedBox(height: 12),
+              ListTile(
+                contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                leading: Icon(Icons.today, color: accentColor),
+                title: Text(
+                  onlyThisLabel,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                subtitle: Text(
+                  '$dateStr 일정에만 적용합니다.',
+                  style: const TextStyle(fontSize: 12),
+                ),
+                onTap: () => Navigator.pop(ctx, _RepeatActionScope.onlyThis),
+              ),
+              ListTile(
+                contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                leading: Icon(Icons.upcoming, color: accentColor),
+                title: Text(
+                  thisAndFutureLabel,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                subtitle: Text(
+                  '$dateStr부터 이후 반복 일정에 모두 적용합니다.',
+                  style: const TextStyle(fontSize: 12),
+                ),
+                onTap: () =>
+                    Navigator.pop(ctx, _RepeatActionScope.thisAndFuture),
+              ),
+              ListTile(
+                contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                leading: Icon(Icons.repeat, color: accentColor),
+                title: Text(
+                  allLabel,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                subtitle: const Text(
+                  '과거와 미래를 포함한 전체 반복 일정에 적용합니다.',
+                  style: TextStyle(fontSize: 12),
+                ),
+                onTap: () => Navigator.pop(ctx, _RepeatActionScope.all),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('취소'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  /// 단일 일정은 즉시 삭제, 반복 일정은 예외 범위 선택 후 삭제 처리
+  Future<void> _requestDeleteSchedule(
+    Schedule schedule,
+    DateTime occurrenceDate,
+  ) async {
+    final targetDay = _dateOnly(occurrenceDate);
+    final snapshot = _cloneSchedulesSnapshot();
+
+    if (!schedule.isRepeating) {
+      if (!widget.schedules.contains(schedule)) return;
+      setState(() {
+        widget.schedules.remove(schedule);
+      });
+      HapticFeedback.mediumImpact();
+      widget.onSchedulesChanged(widget.schedules);
+      _showUndoSnackBar("'${schedule.title}' 일정이 삭제되었습니다.", snapshot);
+      return;
+    }
+
+    final scope = await _showRepeatScopeDialog(
+      title: '반복 일정 삭제',
+      targetDate: targetDay,
+      onlyThisLabel: '이 일정만 삭제',
+      thisAndFutureLabel: '이 일정 및 이후 일정 삭제',
+      allLabel: '전체 반복 일정 삭제',
+      isDestructive: true,
+    );
+
+    if (scope == null || !mounted) return;
+
+    HapticFeedback.mediumImpact();
+    String snackMsg = '';
+
+    setState(() {
+      switch (scope) {
+        case _RepeatActionScope.onlyThis:
+          final key = Schedule.dateKey(targetDay);
+          if (!schedule.excludedDates.contains(key)) {
+            schedule.excludedDates.add(key);
+          }
+          snackMsg =
+              "'${schedule.title}' (${_formatMonthDay(targetDay)}) 일정만 삭제되었습니다.";
+          break;
+
+        case _RepeatActionScope.thisAndFuture:
+          final startDay = _dateOnly(schedule.date);
+          if (!targetDay.isAfter(startDay)) {
+            widget.schedules.remove(schedule);
+          } else {
+            schedule.repeatEndDate =
+                targetDay.subtract(const Duration(days: 1));
+            schedule.repeatCount = null;
+          }
+          snackMsg =
+              "'${schedule.title}' (${_formatMonthDay(targetDay)} 이후) 일정이 삭제되었습니다.";
+          break;
+
+        case _RepeatActionScope.all:
+          widget.schedules.remove(schedule);
+          snackMsg = "'${schedule.title}' 전체 반복 일정이 삭제되었습니다.";
+          break;
+      }
+    });
+
+    widget.onSchedulesChanged(widget.schedules);
+    _showUndoSnackBar(snackMsg, snapshot);
+  }
+
+  void _showScheduleDialog({
+    Schedule? existing,
+    DateTime? defaultDate,
+    DateTime? occurrenceDate,
+  }) {
     HapticFeedback.selectionClick();
-    final targetDate =
-        existing?.date ?? defaultDate ?? _selectedDay ?? DateTime.now();
+    final activeOccurrenceDay = _dateOnly(
+      occurrenceDate ?? defaultDate ?? _selectedDay ?? DateTime.now(),
+    );
+    DateTime repeatStartDate =
+        _dateOnly(existing?.date ?? activeOccurrenceDay);
+
     final titleController = TextEditingController(text: existing?.title ?? '');
     final timeController = TextEditingController(
       text: existing?.time ?? '09:00',
     );
     final tagController = TextEditingController(text: existing?.tag ?? '');
     final selectedWeekdays = List<int>.from(existing?.repeatWeekdays ?? []);
+
+    _RepeatEndType repeatEndType = _RepeatEndType.none;
+    if (existing?.repeatEndDate != null) {
+      repeatEndType = _RepeatEndType.untilDate;
+    } else if (existing?.repeatCount != null && existing!.repeatCount! > 0) {
+      repeatEndType = _RepeatEndType.afterCount;
+    }
+
+    DateTime repeatEndDate = _dateOnly(
+      existing?.repeatEndDate ??
+          repeatStartDate.add(const Duration(days: 30)),
+    );
+    final countController = TextEditingController(
+      text: (existing?.repeatCount ?? 10).toString(),
+    );
 
     showDialog(
       context: context,
@@ -407,6 +621,258 @@ class _CalendarScreenState extends State<CalendarScreen> {
                         );
                       }),
                     ),
+                    if (selectedWeekdays.isNotEmpty) ...[
+                      const SizedBox(height: 14),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .surfaceContainerHighest
+                              .withValues(alpha: 0.35),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: Colors.grey.withValues(alpha: 0.25),
+                          ),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              '반복 기간 설정',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Row(
+                              children: [
+                                const Icon(Icons.play_arrow_rounded, size: 18),
+                                const SizedBox(width: 4),
+                                const Text(
+                                  '시작일:',
+                                  style: TextStyle(fontSize: 13),
+                                ),
+                                const SizedBox(width: 8),
+                                OutlinedButton.icon(
+                                  style: OutlinedButton.styleFrom(
+                                    visualDensity: VisualDensity.compact,
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 10,
+                                      vertical: 6,
+                                    ),
+                                  ),
+                                  onPressed: () async {
+                                    final picked = await showDatePicker(
+                                      context: ctx,
+                                      initialDate: repeatStartDate,
+                                      firstDate: DateTime(2020, 1, 1),
+                                      lastDate: DateTime(2035, 12, 31),
+                                    );
+                                    if (picked != null) {
+                                      setDialogState(() {
+                                        repeatStartDate = _dateOnly(picked);
+                                        if (repeatEndDate
+                                            .isBefore(repeatStartDate)) {
+                                          repeatEndDate = repeatStartDate.add(
+                                            const Duration(days: 7),
+                                          );
+                                        }
+                                      });
+                                    }
+                                  },
+                                  icon: const Icon(
+                                    Icons.calendar_today,
+                                    size: 14,
+                                  ),
+                                  label: Text(
+                                    _formatShortDate(repeatStartDate),
+                                    style: const TextStyle(fontSize: 12),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Wrap(
+                              spacing: 6,
+                              runSpacing: 6,
+                              children: [
+                                ChoiceChip(
+                                  label: const Text(
+                                    '계속 반복',
+                                    style: TextStyle(fontSize: 12),
+                                  ),
+                                  selected:
+                                      repeatEndType == _RepeatEndType.none,
+                                  onSelected: (_) {
+                                    HapticFeedback.selectionClick();
+                                    setDialogState(() {
+                                      repeatEndType = _RepeatEndType.none;
+                                    });
+                                  },
+                                ),
+                                ChoiceChip(
+                                  label: const Text(
+                                    '종료일 지정',
+                                    style: TextStyle(fontSize: 12),
+                                  ),
+                                  selected:
+                                      repeatEndType == _RepeatEndType.untilDate,
+                                  onSelected: (_) {
+                                    HapticFeedback.selectionClick();
+                                    setDialogState(() {
+                                      repeatEndType = _RepeatEndType.untilDate;
+                                      if (repeatEndDate
+                                          .isBefore(repeatStartDate)) {
+                                        repeatEndDate = repeatStartDate.add(
+                                          const Duration(days: 30),
+                                        );
+                                      }
+                                    });
+                                  },
+                                ),
+                                ChoiceChip(
+                                  label: const Text(
+                                    '횟수 지정',
+                                    style: TextStyle(fontSize: 12),
+                                  ),
+                                  selected: repeatEndType ==
+                                      _RepeatEndType.afterCount,
+                                  onSelected: (_) {
+                                    HapticFeedback.selectionClick();
+                                    setDialogState(() {
+                                      repeatEndType =
+                                          _RepeatEndType.afterCount;
+                                    });
+                                  },
+                                ),
+                              ],
+                            ),
+                            if (repeatEndType == _RepeatEndType.untilDate) ...[
+                              const SizedBox(height: 10),
+                              Row(
+                                children: [
+                                  const Icon(Icons.event_available, size: 18),
+                                  const SizedBox(width: 4),
+                                  const Text(
+                                    '종료일:',
+                                    style: TextStyle(fontSize: 13),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  OutlinedButton.icon(
+                                    style: OutlinedButton.styleFrom(
+                                      visualDensity: VisualDensity.compact,
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 10,
+                                        vertical: 6,
+                                      ),
+                                    ),
+                                    onPressed: () async {
+                                      final picked = await showDatePicker(
+                                        context: ctx,
+                                        initialDate: repeatEndDate
+                                                .isBefore(repeatStartDate)
+                                            ? repeatStartDate
+                                            : repeatEndDate,
+                                        firstDate: repeatStartDate,
+                                        lastDate: DateTime(2035, 12, 31),
+                                      );
+                                      if (picked != null) {
+                                        setDialogState(() {
+                                          repeatEndDate = _dateOnly(picked);
+                                        });
+                                      }
+                                    },
+                                    icon: const Icon(
+                                      Icons.event,
+                                      size: 14,
+                                    ),
+                                    label: Text(
+                                      _formatShortDate(repeatEndDate),
+                                      style: const TextStyle(fontSize: 12),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ] else if (repeatEndType ==
+                                _RepeatEndType.afterCount) ...[
+                              const SizedBox(height: 10),
+                              Row(
+                                children: [
+                                  const Icon(Icons.tag, size: 18),
+                                  const SizedBox(width: 4),
+                                  const Text(
+                                    '총 반복 횟수:',
+                                    style: TextStyle(fontSize: 13),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  IconButton(
+                                    visualDensity: VisualDensity.compact,
+                                    icon: const Icon(
+                                      Icons.remove_circle_outline,
+                                      size: 20,
+                                    ),
+                                    onPressed: () {
+                                      final cur = int.tryParse(
+                                            countController.text,
+                                          ) ??
+                                          10;
+                                      if (cur > 1) {
+                                        HapticFeedback.selectionClick();
+                                        setDialogState(() {
+                                          countController.text =
+                                              (cur - 1).toString();
+                                        });
+                                      }
+                                    },
+                                  ),
+                                  SizedBox(
+                                    width: 56,
+                                    child: TextField(
+                                      controller: countController,
+                                      keyboardType: TextInputType.number,
+                                      textAlign: TextAlign.center,
+                                      decoration: const InputDecoration(
+                                        isDense: true,
+                                        contentPadding: EdgeInsets.symmetric(
+                                          horizontal: 6,
+                                          vertical: 8,
+                                        ),
+                                        border: OutlineInputBorder(),
+                                      ),
+                                    ),
+                                  ),
+                                  IconButton(
+                                    visualDensity: VisualDensity.compact,
+                                    icon: const Icon(
+                                      Icons.add_circle_outline,
+                                      size: 20,
+                                    ),
+                                    onPressed: () {
+                                      final cur = int.tryParse(
+                                            countController.text,
+                                          ) ??
+                                          10;
+                                      HapticFeedback.selectionClick();
+                                      setDialogState(() {
+                                        countController.text =
+                                            (cur + 1).toString();
+                                      });
+                                    },
+                                  ),
+                                  const Text(
+                                    '회',
+                                    style: TextStyle(fontSize: 13),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -415,7 +881,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                   TextButton.icon(
                     onPressed: () {
                       Navigator.pop(ctx);
-                      _deleteSchedule(existing);
+                      _requestDeleteSchedule(existing, activeOccurrenceDay);
                     },
                     icon: const Icon(
                       Icons.delete_outline,
@@ -432,37 +898,161 @@ class _CalendarScreenState extends State<CalendarScreen> {
                   child: const Text('취소'),
                 ),
                 FilledButton(
-                  onPressed: () {
+                  onPressed: () async {
                     final title = titleController.text.trim();
                     if (title.isEmpty) return;
 
-                    HapticFeedback.mediumImpact();
                     final cleanTag =
                         tagController.text.trim().replaceAll('#', '');
+                    final cleanTime = timeController.text.trim();
 
-                    setState(() {
-                      if (existing == null) {
+                    final DateTime? newEndDate = (selectedWeekdays.isNotEmpty &&
+                            repeatEndType == _RepeatEndType.untilDate)
+                        ? repeatEndDate
+                        : null;
+                    final int? newRepeatCount = (selectedWeekdays.isNotEmpty &&
+                            repeatEndType == _RepeatEndType.afterCount)
+                        ? (int.tryParse(countController.text.trim()) ?? 1)
+                            .clamp(1, 9999)
+                        : null;
+
+                    // 1. 새 일정 추가인 경우
+                    if (existing == null) {
+                      HapticFeedback.mediumImpact();
+                      setState(() {
                         widget.schedules.add(
                           Schedule(
                             id: DateTime.now()
                                 .microsecondsSinceEpoch
                                 .toString(),
-                            date: targetDate,
+                            date: selectedWeekdays.isNotEmpty
+                                ? repeatStartDate
+                                : activeOccurrenceDay,
                             title: title,
-                            time: timeController.text.trim(),
+                            time: cleanTime,
                             tag: cleanTag,
                             repeatWeekdays: selectedWeekdays,
+                            repeatEndDate: newEndDate,
+                            repeatCount: newRepeatCount,
                           ),
                         );
-                      } else {
+                      });
+                      widget.onSchedulesChanged(widget.schedules);
+                      Navigator.pop(ctx);
+                      return;
+                    }
+
+                    // 2. 기존 단일 일정 수정인 경우
+                    if (!existing.isRepeating) {
+                      HapticFeedback.mediumImpact();
+                      setState(() {
+                        existing.date = selectedWeekdays.isNotEmpty
+                            ? repeatStartDate
+                            : existing.date;
                         existing.title = title;
-                        existing.time = timeController.text.trim();
+                        existing.time = cleanTime;
                         existing.tag = cleanTag;
                         existing.repeatWeekdays = selectedWeekdays;
+                        existing.repeatEndDate = newEndDate;
+                        existing.repeatCount = newRepeatCount;
+                      });
+                      widget.onSchedulesChanged(widget.schedules);
+                      Navigator.pop(ctx);
+                      return;
+                    }
+
+                    // 3. 기존 반복 일정 수정인 경우 -> 예외 처리 적용 범위 선택
+                    final scope = await _showRepeatScopeDialog(
+                      title: '반복 일정 변경',
+                      targetDate: activeOccurrenceDay,
+                      onlyThisLabel: '이 일정만 변경',
+                      thisAndFutureLabel: '이 일정 및 이후 일정 변경',
+                      allLabel: '전체 반복 일정 변경',
+                    );
+
+                    if (scope == null || !mounted) return;
+
+                    HapticFeedback.mediumImpact();
+                    setState(() {
+                      switch (scope) {
+                        case _RepeatActionScope.onlyThis:
+                          // 선택한 날짜를 기존 반복에서 제외하고 해당 날짜의 단일 일정 생성
+                          final key = Schedule.dateKey(activeOccurrenceDay);
+                          if (!existing.excludedDates.contains(key)) {
+                            existing.excludedDates.add(key);
+                          }
+                          widget.schedules.add(
+                            Schedule(
+                              id: DateTime.now()
+                                  .microsecondsSinceEpoch
+                                  .toString(),
+                              date: activeOccurrenceDay,
+                              title: title,
+                              time: cleanTime,
+                              tag: cleanTag,
+                              repeatWeekdays: [],
+                            ),
+                          );
+                          break;
+
+                        case _RepeatActionScope.thisAndFuture:
+                          final origStart = _dateOnly(existing.date);
+                          final splitStart =
+                              repeatStartDate != origStart
+                                  ? repeatStartDate
+                                  : activeOccurrenceDay;
+
+                          if (!activeOccurrenceDay.isAfter(origStart)) {
+                            // 시작일 당일(또는 이전)부터 이후 전체 변경이면 원본 자체를 업데이트
+                            existing.date = splitStart;
+                            existing.title = title;
+                            existing.time = cleanTime;
+                            existing.tag = cleanTag;
+                            existing.repeatWeekdays = selectedWeekdays;
+                            existing.repeatEndDate = newEndDate;
+                            existing.repeatCount = newRepeatCount;
+                          } else {
+                            // 원본 일정은 선택일 전날까지만 반복되도록 종료일 설정
+                            existing.repeatEndDate = activeOccurrenceDay
+                                .subtract(const Duration(days: 1));
+                            existing.repeatCount = null;
+
+                            // 선택한 날짜부터 새로운 반복(또는 단일) 일정 추가
+                            widget.schedules.add(
+                              Schedule(
+                                id: DateTime.now()
+                                    .microsecondsSinceEpoch
+                                    .toString(),
+                                date: splitStart,
+                                title: title,
+                                time: cleanTime,
+                                tag: cleanTag,
+                                repeatWeekdays: selectedWeekdays,
+                                repeatEndDate: newEndDate,
+                                repeatCount: newRepeatCount,
+                              ),
+                            );
+                          }
+                          break;
+
+                        case _RepeatActionScope.all:
+                          existing.date = selectedWeekdays.isNotEmpty
+                              ? repeatStartDate
+                              : existing.date;
+                          existing.title = title;
+                          existing.time = cleanTime;
+                          existing.tag = cleanTag;
+                          existing.repeatWeekdays = selectedWeekdays;
+                          existing.repeatEndDate = newEndDate;
+                          existing.repeatCount = newRepeatCount;
+                          break;
                       }
                     });
+
                     widget.onSchedulesChanged(widget.schedules);
-                    Navigator.pop(ctx);
+                    if (ctx.mounted) {
+                      Navigator.pop(ctx);
+                    }
                   },
                   child: const Text('저장'),
                 ),
@@ -661,7 +1251,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
             _selectedDay = selectedDay;
             _focusedDay = focusedDay;
           });
-          _showScheduleDialog(defaultDate: selectedDay);
+          _showScheduleDialog(
+            defaultDate: selectedDay,
+            occurrenceDate: selectedDay,
+          );
         },
         onPageChanged: (focusedDay) {
           setState(() {
@@ -852,6 +1445,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
   }
 
   Widget _buildScheduleList(
+    DateTime activeDay,
     List<Schedule> selectedEvents,
     Map<CalendarViewStage, double> stageHeights,
   ) {
@@ -909,7 +1503,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
               isComplete ? Colors.green : (linkedSit?.color ?? Colors.blue);
 
           return Dismissible(
-            key: ValueKey('${sc.id}_${sc.date}'),
+            key: ValueKey('${sc.id}_${Schedule.dateKey(activeDay)}'),
             direction: DismissDirection.endToStart,
             background: Container(
               margin: const EdgeInsets.symmetric(vertical: 4),
@@ -924,7 +1518,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
                 color: Colors.white,
               ),
             ),
-            onDismissed: (_) => _deleteSchedule(sc),
+            confirmDismiss: (_) async {
+              await _requestDeleteSchedule(sc, activeDay);
+              return false;
+            },
             child: Card(
               margin: const EdgeInsets.symmetric(vertical: 4),
               shape: RoundedRectangleBorder(
@@ -938,7 +1535,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
                   if (linkedSit != null) {
                     _showChecklistBottomSheet(sc, linkedSit);
                   } else {
-                    _showScheduleDialog(existing: sc);
+                    _showScheduleDialog(
+                      existing: sc,
+                      occurrenceDate: activeDay,
+                    );
                   }
                 },
                 leading: CircleAvatar(
@@ -998,11 +1598,13 @@ class _CalendarScreenState extends State<CalendarScreen> {
                           const SizedBox(width: 8),
                           const Icon(Icons.repeat, size: 14),
                           const SizedBox(width: 2),
-                          Text(
-                            sc.repeatWeekdays
-                                .map((w) => _weekdayLabels[w - 1])
-                                .join('·'),
-                            style: const TextStyle(fontSize: 12),
+                          Flexible(
+                            child: Text(
+                              _buildRepeatSummaryText(sc),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(fontSize: 12),
+                            ),
                           ),
                         ],
                       ],
@@ -1059,7 +1661,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
                         size: 20,
                       ),
                       tooltip: '일정 수정',
-                      onPressed: () => _showScheduleDialog(existing: sc),
+                      onPressed: () => _showScheduleDialog(
+                        existing: sc,
+                        occurrenceDate: activeDay,
+                      ),
                     ),
                   ],
                 ),
@@ -1251,6 +1856,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                     Expanded(
                       child: ClipRect(
                         child: _buildScheduleList(
+                          activeDay,
                           selectedEvents,
                           stageHeights,
                         ),
@@ -1268,7 +1874,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
           bottom: _viewStage == CalendarViewStage.expanded ? 48.0 : 0.0,
         ),
         child: FloatingActionButton.extended(
-          onPressed: () => _showScheduleDialog(),
+          onPressed: () => _showScheduleDialog(occurrenceDate: activeDay),
           icon: const Icon(Icons.add),
           label: const Text('일정 추가'),
         ),
