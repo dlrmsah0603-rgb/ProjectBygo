@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/schedule_model.dart';
 import '../models/situation_model.dart';
@@ -10,6 +11,13 @@ class StorageService {
   static const String _keyThemeMode = 'theme_mode';
   static const String _keySeedColor = 'seed_color';
   static const String _keyShowTips = 'show_tips';
+  static const String _keyAutoResetOnTime = 'auto_reset_on_schedule_time';
+  static const String _keyResetExecutedKeys = 'bygo_reset_executed_keys';
+  static const String _keyWidgetPayload = 'bygo_home_widget_payload';
+  static const String _keyWidgetDisplayText = 'bygo_home_widget_text';
+
+  static const MethodChannel _widgetChannel =
+      MethodChannel('com.bygo.app/widget');
 
   // --- 1. 일정(Schedules) 저장 및 불러오기 ---
   Future<List<Schedule>> loadSchedules() async {
@@ -62,7 +70,6 @@ class StorageService {
     } catch (_) {}
   }
 
-  // 기본 초기 상황 데이터
   List<Situation> _defaultSituations() {
     return [
       Situation(
@@ -156,12 +163,157 @@ class StorageService {
     } catch (_) {}
   }
 
-  // --- 6. 전체 데이터 초기화 ---
+  // --- 6. 일정 시간 정각 체크리스트 자동 초기화 설정 및 이력 ---
+  Future<bool> loadAutoResetOnScheduleTime() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      return prefs.getBool(_keyAutoResetOnTime) ?? true;
+    } catch (_) {
+      return true;
+    }
+  }
+
+  Future<void> saveAutoResetOnScheduleTime(bool enabled) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_keyAutoResetOnTime, enabled);
+    } catch (_) {}
+  }
+
+  Future<Set<String>> loadResetExecutedKeys() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final list = prefs.getStringList(_keyResetExecutedKeys);
+      if (list != null) return list.toSet();
+    } catch (_) {}
+    return <String>{};
+  }
+
+  Future<void> saveResetExecutedKeys(Set<String> keys) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final list = keys.toList();
+      final trimmed =
+          list.length > 300 ? list.sublist(list.length - 300) : list;
+      await prefs.setStringList(_keyResetExecutedKeys, trimmed);
+    } catch (_) {}
+  }
+
+  // --- 7. 홈 화면 위젯 상태 동기화 ---
+  Future<void> syncHomeWidgetData({
+    required bool hasActivePrepSchedule,
+    required String summaryText,
+    required List<Map<String, dynamic>> activeGroupsJson,
+  }) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final payload = jsonEncode({
+        'hasActive': hasActivePrepSchedule,
+        'emptyMessage': '예정된 일정이 없습니다.',
+        'summaryText': summaryText,
+        'groups': activeGroupsJson,
+        'updatedAt': DateTime.now().toIso8601String(),
+      });
+      await prefs.setString(_keyWidgetPayload, payload);
+      await prefs.setString(
+        _keyWidgetDisplayText,
+        hasActivePrepSchedule ? summaryText : '예정된 일정이 없습니다.',
+      );
+
+      try {
+        await _widgetChannel.invokeMethod('updateHomeWidget', {
+          'payload': payload,
+        });
+      } on MissingPluginException catch (_) {
+      } on PlatformException catch (_) {}
+    } catch (_) {}
+  }
+
+  // --- 8. 백업(JSON 내보내기) 및 불러오기(JSON 복원) ---
+  Future<String> exportBackupJson() async {
+    final schedules = await loadSchedules();
+    final situations = await loadSituations();
+    final themeMode = await loadThemeMode();
+    final seedColor = await loadSeedColor();
+    final showTips = await loadShowTips();
+    final autoReset = await loadAutoResetOnScheduleTime();
+
+    final backupData = {
+      'version': 1,
+      'exportedAt': DateTime.now().toIso8601String(),
+      'schedules': schedules.map((s) => s.toJson()).toList(),
+      'situations': situations.map((s) => s.toJson()).toList(),
+      'themeMode': themeMode == ThemeMode.light
+          ? 'light'
+          : (themeMode == ThemeMode.dark ? 'dark' : 'system'),
+      'seedColor': seedColor,
+      'showTips': showTips,
+      'autoResetOnScheduleTime': autoReset,
+    };
+
+    return const JsonEncoder.withIndent('  ').convert(backupData);
+  }
+
+  Future<bool> importBackupJson(String rawJson) async {
+    try {
+      final decoded = jsonDecode(rawJson.trim());
+      if (decoded is! Map<String, dynamic>) return false;
+
+      final hasSchedules = decoded['schedules'] is List;
+      final hasSituations = decoded['situations'] is List;
+      if (!hasSchedules && !hasSituations) return false;
+
+      if (hasSchedules) {
+        final schedules = (decoded['schedules'] as List)
+            .map((e) => Schedule.fromJson(Map<String, dynamic>.from(e as Map)))
+            .toList();
+        await saveSchedules(schedules);
+      }
+
+      if (hasSituations) {
+        final situations = (decoded['situations'] as List)
+            .map(
+              (e) => Situation.fromJson(Map<String, dynamic>.from(e as Map)),
+            )
+            .toList();
+        await saveSituations(situations);
+      }
+
+      if (decoded['themeMode'] is String) {
+        final modeStr = decoded['themeMode'] as String;
+        final mode = modeStr == 'light'
+            ? ThemeMode.light
+            : (modeStr == 'dark' ? ThemeMode.dark : ThemeMode.system);
+        await saveThemeMode(mode);
+      }
+
+      if (decoded['seedColor'] is num) {
+        await saveSeedColor((decoded['seedColor'] as num).toInt());
+      }
+
+      if (decoded['showTips'] is bool) {
+        await saveShowTips(decoded['showTips'] as bool);
+      }
+
+      if (decoded['autoResetOnScheduleTime'] is bool) {
+        await saveAutoResetOnScheduleTime(
+          decoded['autoResetOnScheduleTime'] as bool,
+        );
+      }
+
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // --- 9. 전체 데이터 초기화 ---
   Future<void> resetAllData() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove(_keySchedules);
       await prefs.remove(_keySituations);
+      await prefs.remove(_keyResetExecutedKeys);
     } catch (_) {}
   }
 }

@@ -8,7 +8,7 @@ class Schedule {
   DateTime? repeatEndDate; // 반복 종료일
   int? repeatCount; // 총 반복 횟수
   List<String> excludedDates; // 예외 처리된 날짜 키 ('yyyy-MM-dd')
-  int? prepMinutesBefore; // 일정 몇 분 전에 준비시간 알림을 울릴지 (null이면 미설정)
+  int? prepMinutesBefore; // 일정 몇 분 전에 준비시간을 시작할지 (null이면 미설정)
   bool isAutoRecord; // 체크리스트 완료 시 자동 등록된 기록 일정 여부
 
   // 중복 푸시 알림 방지를 위한 런타임 기록 Set ('scheduleId_yyyy-MM-dd_prepMin')
@@ -71,14 +71,41 @@ class Schedule {
     return '준비 $pTime ($prepMinutesBefore분 전)';
   }
 
-  /// 특정 날짜 기준 준비시간의 정확한 DateTime 반환
-  DateTime? prepDateTimeForDay(DateTime day) {
-    if (prepMinutesBefore == null) return null;
+  /// 특정 날짜 기준 해당 일정의 시작 시각 DateTime 반환
+  DateTime scheduleDateTimeForDay(DateTime day) {
     final parts = time.split(':');
     final hour = int.tryParse(parts.firstOrNull ?? '9') ?? 9;
     final minute = int.tryParse(parts.length > 1 ? parts[1] : '0') ?? 0;
-    final scheduleDt = DateTime(day.year, day.month, day.day, hour, minute);
+    return DateTime(day.year, day.month, day.day, hour, minute);
+  }
+
+  /// 특정 날짜 기준 준비시간의 정확한 DateTime 반환
+  DateTime? prepDateTimeForDay(DateTime day) {
+    if (prepMinutesBefore == null) return null;
+    final scheduleDt = scheduleDateTimeForDay(day);
     return scheduleDt.subtract(Duration(minutes: prepMinutesBefore!));
+  }
+
+  /// 현재 시각(now)이 [준비시간 <= now < 해당 일정 시간] 구간 내에 있는지 확인
+  bool isInPrepWindowAt(DateTime now) {
+    if (isAutoRecord || prepMinutesBefore == null || prepMinutesBefore! <= 0) {
+      return false;
+    }
+    final baseDay = DateTime(now.year, now.month, now.day);
+    // 자정을 걸치는 준비시간도 정확히 감지하기 위해 어제/오늘/내일 날짜를 모두 확인
+    for (int offset = -1; offset <= 1; offset++) {
+      final candidateDay = baseDay.add(Duration(days: offset));
+      if (!occursOn(candidateDay)) continue;
+
+      final prepDt = prepDateTimeForDay(candidateDay);
+      final schedDt = scheduleDateTimeForDay(candidateDay);
+      if (prepDt == null) continue;
+
+      if (!now.isBefore(prepDt) && now.isBefore(schedDt)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   Schedule copyWith({

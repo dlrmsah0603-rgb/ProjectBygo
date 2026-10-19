@@ -12,6 +12,8 @@ class SituationScreen extends StatefulWidget {
   final List<Schedule>? schedules;
   final ValueChanged<List<Schedule>>? onSchedulesChanged;
   final ValueChanged<Situation>? onChecklistCompleted;
+  final String? selectedSituationId;
+  final ValueChanged<String?>? onSelectedSituationChanged;
 
   const SituationScreen({
     super.key,
@@ -21,6 +23,8 @@ class SituationScreen extends StatefulWidget {
     this.schedules,
     this.onSchedulesChanged,
     this.onChecklistCompleted,
+    this.selectedSituationId,
+    this.onSelectedSituationChanged,
   });
 
   @override
@@ -28,7 +32,7 @@ class SituationScreen extends StatefulWidget {
 }
 
 class _SituationScreenState extends State<SituationScreen> {
-  String? _selectedSituationId;
+  String? _internalSelectedSituationId;
 
   // 다중 선택 및 순서 변경 모드 상태
   bool _isMultiSelectMode = false;
@@ -56,15 +60,71 @@ class _SituationScreenState extends State<SituationScreen> {
     Colors.teal,
     Colors.indigo,
     Colors.pink,
-    Colors.black87, // 블랙 앤 화이트 무채색 옵션 추가
+    Colors.black87,
   ];
 
+  @override
+  void initState() {
+    super.initState();
+    _internalSelectedSituationId = widget.selectedSituationId;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _tryAutoFocusIncompletePrepSituation();
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant SituationScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.selectedSituationId != oldWidget.selectedSituationId &&
+        widget.selectedSituationId != null) {
+      _internalSelectedSituationId = widget.selectedSituationId;
+    }
+  }
+
+  String? get _effectiveSelectedId =>
+      widget.selectedSituationId ?? _internalSelectedSituationId;
+
+  void _setSelectedId(String? id) {
+    setState(() {
+      _internalSelectedSituationId = id;
+    });
+    widget.onSelectedSituationChanged?.call(id);
+  }
+
   Situation? get _selectedSituation {
-    if (_selectedSituationId == null) return null;
+    final id = _effectiveSelectedId;
+    if (id == null) return null;
     for (final s in widget.situations) {
-      if (s.id == _selectedSituationId) return s;
+      if (s.id == id) return s;
     }
     return null;
+  }
+
+  /// 현재 시각 기준 [준비시간 ~ 해당 일정 시간] 내에 있는 해당 상황의 일정 리스트 반환
+  List<Schedule> _getActivePrepSchedulesForSituation(Situation situation) {
+    if (widget.schedules == null || situation.tag.trim().isEmpty) return [];
+    final now = DateTime.now();
+    final active = widget.schedules!.where((sc) {
+      return sc.tag.trim() == situation.tag.trim() && sc.isInPrepWindowAt(now);
+    }).toList();
+    active.sort((a, b) => a.time.compareTo(b.time));
+    return active;
+  }
+
+  /// 준비시간 ~ 일정 시간 내 미완료 체크리스트가 있으면 자동 포커싱
+  void _tryAutoFocusIncompletePrepSituation() {
+    if (!mounted) return;
+    for (final sit in widget.situations) {
+      final activeSchedules = _getActivePrepSchedulesForSituation(sit);
+      if (activeSchedules.isNotEmpty &&
+          sit.items.isNotEmpty &&
+          !sit.isAllChecked) {
+        if (_effectiveSelectedId != sit.id) {
+          _setSelectedId(sit.id);
+        }
+        return;
+      }
+    }
   }
 
   void _notifyParent() {
@@ -145,7 +205,6 @@ class _SituationScreenState extends State<SituationScreen> {
       return;
     }
 
-    // 상위에서 schedules를 직접 전달받지 않은 경우에도 SharedPreferences에 직접 기록
     try {
       final prefs = await SharedPreferences.getInstance();
       final raw = prefs.getString('schedules');
@@ -221,9 +280,9 @@ class _SituationScreenState extends State<SituationScreen> {
     HapticFeedback.heavyImpact();
     setState(() {
       widget.situations.removeWhere((s) => _multiSelectedIds.contains(s.id));
-      if (_selectedSituationId != null &&
-          _multiSelectedIds.contains(_selectedSituationId)) {
-        _selectedSituationId = null;
+      if (_effectiveSelectedId != null &&
+          _multiSelectedIds.contains(_effectiveSelectedId)) {
+        _setSelectedId(null);
       }
       _multiSelectedIds.clear();
       _isMultiSelectMode = false;
@@ -446,7 +505,7 @@ class _SituationScreenState extends State<SituationScreen> {
                         colorValue: selectedColorValue,
                       );
                       widget.situations.add(newSituation);
-                      _selectedSituationId = newSituation.id;
+                      _setSelectedId(newSituation.id);
                     } else {
                       existing.name = name;
                       existing.tag = tag.isEmpty ? name : tag;
@@ -536,6 +595,9 @@ class _SituationScreenState extends State<SituationScreen> {
     bool isFeedback = false,
   }) {
     final isComplete = situation.isAllChecked;
+    final activePrepSchedules = _getActivePrepSchedulesForSituation(situation);
+    final isPrepActive = activePrepSchedules.isNotEmpty;
+
     final baseColor = isComplete ? Colors.green : situation.color;
     final effectiveColor =
         (_isMultiSelectMode && isMultiSelected) ? Colors.redAccent : baseColor;
@@ -549,7 +611,7 @@ class _SituationScreenState extends State<SituationScreen> {
       borderRadius: BorderRadius.circular(14),
       elevation: (isFilled || isFeedback) ? 4 : 0,
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 160),
+        constraints: const BoxConstraints(maxWidth: 190),
         child: Container(
           padding: const EdgeInsets.symmetric(
             horizontal: 14,
@@ -558,10 +620,12 @@ class _SituationScreenState extends State<SituationScreen> {
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(14),
             border: Border.all(
-              color: isFilled
-                  ? effectiveColor
-                  : effectiveColor.withValues(alpha: 0.4),
-              width: 1.5,
+              color: isPrepActive && !isComplete
+                  ? Colors.deepOrange
+                  : (isFilled
+                      ? effectiveColor
+                      : effectiveColor.withValues(alpha: 0.4)),
+              width: isPrepActive && !isComplete ? 2.0 : 1.5,
             ),
           ),
           child: Row(
@@ -578,7 +642,11 @@ class _SituationScreenState extends State<SituationScreen> {
                 const SizedBox(width: 6),
               ] else ...[
                 Icon(
-                  isComplete ? Icons.verified : situation.iconData,
+                  isComplete
+                      ? Icons.verified
+                      : (isPrepActive
+                          ? Icons.notifications_active
+                          : situation.iconData),
                   size: 18,
                   color: isFilled ? Colors.white : effectiveColor,
                 ),
@@ -586,11 +654,13 @@ class _SituationScreenState extends State<SituationScreen> {
               ],
               Flexible(
                 child: Text(
-                  situation.name,
+                  isPrepActive
+                      ? '${situation.name} (준비중)'
+                      : situation.name,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    fontSize: 15,
+                    fontSize: 14,
                     fontWeight: FontWeight.bold,
                     color: isFilled ? Colors.white : effectiveColor,
                   ),
@@ -620,13 +690,13 @@ class _SituationScreenState extends State<SituationScreen> {
                 child: Text(
                   _isMultiSelectMode
                       ? '${_multiSelectedIds.length}개 선택됨 · 드래그하여 순서 변경'
-                      : '외출 상황 선택 (꾹 눌러 순서 변경·다중 삭제)',
+                      : '외출 상황 선택',
                   style: TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.bold,
                     color: _isMultiSelectMode
                         ? Theme.of(context).colorScheme.primary
-                        : Colors.grey,
+                        : Colors.black,
                   ),
                 ),
               ),
@@ -664,7 +734,7 @@ class _SituationScreenState extends State<SituationScreen> {
             spacing: 10,
             runSpacing: 10,
             children: widget.situations.map((situation) {
-              final isSelected = situation.id == _selectedSituationId;
+              final isSelected = situation.id == _effectiveSelectedId;
               final isMultiSelected = _multiSelectedIds.contains(situation.id);
 
               return DragTarget<String>(
@@ -728,8 +798,8 @@ class _SituationScreenState extends State<SituationScreen> {
                     child: GestureDetector(
                       onTap: () {
                         HapticFeedback.selectionClick();
-                        setState(() {
-                          if (_isMultiSelectMode) {
+                        if (_isMultiSelectMode) {
+                          setState(() {
                             if (_multiSelectedIds.contains(situation.id)) {
                               _multiSelectedIds.remove(situation.id);
                               if (_multiSelectedIds.isEmpty) {
@@ -738,14 +808,14 @@ class _SituationScreenState extends State<SituationScreen> {
                             } else {
                               _multiSelectedIds.add(situation.id);
                             }
+                          });
+                        } else {
+                          if (_effectiveSelectedId == situation.id) {
+                            _setSelectedId(null);
                           } else {
-                            if (_selectedSituationId == situation.id) {
-                              _selectedSituationId = null;
-                            } else {
-                              _selectedSituationId = situation.id;
-                            }
+                            _setSelectedId(situation.id);
                           }
-                        });
+                        }
                       },
                       child: _buildSituationChipContent(
                         situation,
@@ -769,6 +839,7 @@ class _SituationScreenState extends State<SituationScreen> {
     final progress = situation.progress;
     final isComplete = situation.isAllChecked;
     final activeColor = isComplete ? Colors.green : situation.color;
+    final activePrepSchedules = _getActivePrepSchedulesForSituation(situation);
 
     return Expanded(
       child: SingleChildScrollView(
@@ -789,6 +860,63 @@ class _SituationScreenState extends State<SituationScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                if (activePrepSchedules.isNotEmpty) ...[
+                  Container(
+                    width: double.infinity,
+                    margin: const EdgeInsets.only(bottom: 12),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.orange.withValues(alpha: 0.14),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                        color: Colors.orange.withValues(alpha: 0.4),
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const Icon(
+                              Icons.notifications_active,
+                              size: 16,
+                              color: Colors.deepOrange,
+                            ),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Text(
+                                activePrepSchedules.length > 1
+                                    ? '현재 준비시간 진행 중 (동일 #${situation.tag} 태그 ${activePrepSchedules.length}개 일정 체크리스트 공유)'
+                                    : '현재 준비시간 진행 중 (일정 시각 도달 시 자동 초기화)',
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.deepOrange,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          activePrepSchedules
+                              .map(
+                                (sc) =>
+                                    '• ${sc.title} (준비 ${sc.prepTimeString ?? ""} ~ 일정 ${sc.time})',
+                              )
+                              .join('\n'),
+                          style: const TextStyle(
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
                 Row(
                   children: [
                     CircleAvatar(
@@ -883,7 +1011,7 @@ class _SituationScreenState extends State<SituationScreen> {
                         } else if (value == 'delete') {
                           HapticFeedback.mediumImpact();
                           widget.situations.remove(situation);
-                          _selectedSituationId = null;
+                          _setSelectedId(null);
                           _notifyParent();
                         }
                       },
@@ -1089,7 +1217,7 @@ class _SituationScreenState extends State<SituationScreen> {
                   SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      '팁: 상황 버튼을 눌러 체크리스트를 확인하고, 전부 체크하면 캘린더에 자동 기록됩니다.',
+                      '팁: 준비시간 ~ 일정 시간에는 미완료 체크리스트가 자동 포커싱되며, 일정 정각에 초기화됩니다.',
                       style: TextStyle(fontSize: 12),
                     ),
                   ),
