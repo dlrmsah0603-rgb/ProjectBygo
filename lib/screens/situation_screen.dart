@@ -1,17 +1,26 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import '../models/schedule_model.dart';
 import '../models/situation_model.dart';
 
 class SituationScreen extends StatefulWidget {
   final List<Situation> situations;
   final ValueChanged<List<Situation>> onSituationsChanged;
   final bool showTips;
+  final List<Schedule>? schedules;
+  final ValueChanged<List<Schedule>>? onSchedulesChanged;
+  final ValueChanged<Situation>? onChecklistCompleted;
 
   const SituationScreen({
     super.key,
     required this.situations,
     required this.onSituationsChanged,
     this.showTips = true,
+    this.schedules,
+    this.onSchedulesChanged,
+    this.onChecklistCompleted,
   });
 
   @override
@@ -47,6 +56,7 @@ class _SituationScreenState extends State<SituationScreen> {
     Colors.teal,
     Colors.indigo,
     Colors.pink,
+    Colors.black87, // 블랙 앤 화이트 무채색 옵션 추가
   ];
 
   Situation? get _selectedSituation {
@@ -60,6 +70,135 @@ class _SituationScreenState extends State<SituationScreen> {
   void _notifyParent() {
     setState(() {});
     widget.onSituationsChanged(widget.situations);
+  }
+
+  /// 상황 체크리스트가 전부 체크 완료되었을 때 캘린더에 기록용 일정 자동 추가
+  Future<void> _recordSituationCompletionToCalendar(
+    Situation situation,
+  ) async {
+    if (widget.onChecklistCompleted != null) {
+      widget.onChecklistCompleted!(situation);
+      return;
+    }
+
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final hh = now.hour.toString().padLeft(2, '0');
+    final mm = now.minute.toString().padLeft(2, '0');
+    final currentTimeStr = '$hh:$mm';
+    final recordTitle = '${situation.name} 체크리스트 완료';
+
+    if (widget.schedules != null) {
+      Schedule? existingRecord;
+      for (final sc in widget.schedules!) {
+        if (sc.isAutoRecord &&
+            sc.tag.trim() == situation.tag.trim() &&
+            sc.date.year == today.year &&
+            sc.date.month == today.month &&
+            sc.date.day == today.day) {
+          existingRecord = sc;
+          break;
+        }
+      }
+
+      Schedule targetRecord;
+      final bool isNew;
+      if (existingRecord != null) {
+        existingRecord.time = currentTimeStr;
+        existingRecord.title = recordTitle;
+        targetRecord = existingRecord;
+        isNew = false;
+      } else {
+        targetRecord = Schedule(
+          id: 'record_${now.microsecondsSinceEpoch}',
+          date: today,
+          title: recordTitle,
+          time: currentTimeStr,
+          tag: situation.tag,
+          isAutoRecord: true,
+        );
+        widget.schedules!.add(targetRecord);
+        isNew = true;
+      }
+      widget.onSchedulesChanged?.call(widget.schedules!);
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).clearSnackBars();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            "🎉 '${situation.name}' 체크리스트 완료! 캘린더에 기록이 자동 추가되었습니다.",
+          ),
+          behavior: SnackBarBehavior.floating,
+          action: isNew
+              ? SnackBarAction(
+                  label: '실행 취소',
+                  onPressed: () {
+                    HapticFeedback.lightImpact();
+                    widget.schedules!.remove(targetRecord);
+                    widget.onSchedulesChanged?.call(widget.schedules!);
+                  },
+                )
+              : null,
+        ),
+      );
+      return;
+    }
+
+    // 상위에서 schedules를 직접 전달받지 않은 경우에도 SharedPreferences에 직접 기록
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString('schedules');
+      final List<Schedule> list = raw != null
+          ? (jsonDecode(raw) as List<dynamic>)
+              .map((e) => Schedule.fromJson(e as Map<String, dynamic>))
+              .toList()
+          : <Schedule>[];
+
+      Schedule? existingRecord;
+      for (final sc in list) {
+        if (sc.isAutoRecord &&
+            sc.tag.trim() == situation.tag.trim() &&
+            sc.date.year == today.year &&
+            sc.date.month == today.month &&
+            sc.date.day == today.day) {
+          existingRecord = sc;
+          break;
+        }
+      }
+
+      if (existingRecord != null) {
+        existingRecord.time = currentTimeStr;
+        existingRecord.title = recordTitle;
+      } else {
+        list.add(
+          Schedule(
+            id: 'record_${now.microsecondsSinceEpoch}',
+            date: today,
+            title: recordTitle,
+            time: currentTimeStr,
+            tag: situation.tag,
+            isAutoRecord: true,
+          ),
+        );
+      }
+
+      await prefs.setString(
+        'schedules',
+        jsonEncode(list.map((s) => s.toJson()).toList()),
+      );
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).clearSnackBars();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            "🎉 '${situation.name}' 체크리스트 완료! 캘린더에 기록이 자동 추가되었습니다.",
+          ),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (_) {}
   }
 
   void _exitMultiSelectMode() {
@@ -113,6 +252,7 @@ class _SituationScreenState extends State<SituationScreen> {
   }
 
   void _toggleAllItems(Situation situation) {
+    final wasAllChecked = situation.isAllChecked;
     final targetState = !situation.isAllChecked;
     if (targetState) {
       HapticFeedback.heavyImpact();
@@ -123,9 +263,14 @@ class _SituationScreenState extends State<SituationScreen> {
       item.isChecked = targetState;
     }
     _notifyParent();
+
+    if (!wasAllChecked && situation.isAllChecked) {
+      _recordSituationCompletionToCalendar(situation);
+    }
   }
 
   void _toggleSingleItem(Situation situation, ChecklistItem item) {
+    final wasAllChecked = situation.isAllChecked;
     item.isChecked = !item.isChecked;
     if (situation.isAllChecked) {
       HapticFeedback.heavyImpact();
@@ -133,6 +278,10 @@ class _SituationScreenState extends State<SituationScreen> {
       HapticFeedback.lightImpact();
     }
     _notifyParent();
+
+    if (!wasAllChecked && situation.isAllChecked) {
+      _recordSituationCompletionToCalendar(situation);
+    }
   }
 
   void _deleteChecklistItem(Situation situation, int index) {
@@ -143,7 +292,7 @@ class _SituationScreenState extends State<SituationScreen> {
     ScaffoldMessenger.of(context).clearSnackBars();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text("'${removedItem.name}' 소지품이 삭제되었습니다."),
+        content: Text("'${removedItem.name}' 체크리스트 항목이 삭제되었습니다."),
         behavior: SnackBarBehavior.floating,
         action: SnackBarAction(
           label: '실행 취소',
@@ -324,12 +473,12 @@ class _SituationScreenState extends State<SituationScreen> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text(existing == null ? '소지품 추가' : '소지품 이름 수정'),
+        title: Text(existing == null ? '체크리스트 항목 추가' : '체크리스트 항목 수정'),
         content: TextField(
           controller: controller,
           autofocus: true,
           decoration: const InputDecoration(
-            labelText: '소지품 이름 (예: 지갑, 무선 이어폰, 우산)',
+            labelText: '체크리스트 항목 이름 (예: 지갑, 무선 이어폰, 우산)',
             border: OutlineInputBorder(),
           ),
           onSubmitted: (_) {
@@ -695,10 +844,10 @@ class _SituationScreenState extends State<SituationScreen> {
                           const SizedBox(height: 4),
                           Text(
                             total == 0
-                                ? '소지품을 추가해 주세요'
+                                ? '체크리스트 항목을 추가해 주세요'
                                 : isComplete
-                                    ? '준비 완료! 모든 소지품을 챙겼습니다 🎉'
-                                    : '$checked / $total개 챙김 (${(progress * 100).round()}%)',
+                                    ? '준비 완료! 모든 체크리스트를 완료했습니다 🎉'
+                                    : '$checked / $total개 완료 (${(progress * 100).round()}%)',
                             style: TextStyle(
                               fontSize: 12,
                               fontWeight: isComplete
@@ -780,6 +929,7 @@ class _SituationScreenState extends State<SituationScreen> {
                     onReorderStart: (_) => HapticFeedback.selectionClick(),
                     onReorderItem: (oldIndex, newIndex) {
                       HapticFeedback.mediumImpact();
+                      if (newIndex > oldIndex) newIndex -= 1;
                       final moved = situation.items.removeAt(oldIndex);
                       situation.items.insert(newIndex, moved);
                       _notifyParent();
@@ -807,7 +957,7 @@ class _SituationScreenState extends State<SituationScreen> {
                               ),
                               const SizedBox(width: 8),
                               Text(
-                                item.isChecked ? '체크 해제' : '챙김 완료!',
+                                item.isChecked ? '체크 해제' : '체크 완료!',
                                 style: const TextStyle(
                                   color: Colors.white,
                                   fontWeight: FontWeight.bold,
@@ -880,7 +1030,7 @@ class _SituationScreenState extends State<SituationScreen> {
                                   Icons.edit_outlined,
                                   size: 18,
                                 ),
-                                tooltip: '소지품 수정',
+                                tooltip: '체크리스트 수정',
                                 onPressed: () => _showItemDialog(
                                   situation,
                                   existing: item,
@@ -907,7 +1057,7 @@ class _SituationScreenState extends State<SituationScreen> {
                   child: TextButton.icon(
                     onPressed: () => _showItemDialog(situation),
                     icon: const Icon(Icons.add, size: 18),
-                    label: const Text('소지품 항목 추가'),
+                    label: const Text('체크리스트 항목 추가'),
                   ),
                 ),
               ],
@@ -939,7 +1089,7 @@ class _SituationScreenState extends State<SituationScreen> {
                   SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      '팁: 상황 버튼을 꾹 누르면 순서 변경 및 다중 삭제가 가능합니다.',
+                      '팁: 상황 버튼을 눌러 체크리스트를 확인하고, 전부 체크하면 캘린더에 자동 기록됩니다.',
                       style: TextStyle(fontSize: 12),
                     ),
                   ),
@@ -953,7 +1103,7 @@ class _SituationScreenState extends State<SituationScreen> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     const Icon(
-                      Icons.backpack_outlined,
+                      Icons.checklist_rtl,
                       size: 64,
                       color: Colors.grey,
                     ),
@@ -985,7 +1135,7 @@ class _SituationScreenState extends State<SituationScreen> {
                       ),
                       const SizedBox(height: 12),
                       Text(
-                        '위에서 외출 상황 버튼을 선택하면\n소지품 체크리스트가 표시됩니다.',
+                        '위에서 외출 상황 버튼을 선택하면\n체크리스트가 표시됩니다.',
                         textAlign: TextAlign.center,
                         style: TextStyle(
                           color: Colors.grey.shade600,

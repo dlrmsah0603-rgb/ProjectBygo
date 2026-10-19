@@ -2,12 +2,17 @@ class Schedule {
   String id;
   DateTime date; // 단일 일정 날짜 또는 반복 일정의 시작일
   String title;
-  String time;
+  String time; // 'HH:mm'
   String tag;
   List<int> repeatWeekdays; // 1(월) ~ 7(일)
   DateTime? repeatEndDate; // 반복 종료일
   int? repeatCount; // 총 반복 횟수
   List<String> excludedDates; // 예외 처리된 날짜 키 ('yyyy-MM-dd')
+  int? prepMinutesBefore; // 일정 몇 분 전에 준비시간 알림을 울릴지 (null이면 미설정)
+  bool isAutoRecord; // 체크리스트 완료 시 자동 등록된 기록 일정 여부
+
+  // 중복 푸시 알림 방지를 위한 런타임 기록 Set ('scheduleId_yyyy-MM-dd_prepMin')
+  static final Set<String> notifiedKeys = <String>{};
 
   Schedule({
     required this.id,
@@ -19,6 +24,8 @@ class Schedule {
     this.repeatEndDate,
     this.repeatCount,
     List<String>? excludedDates,
+    this.prepMinutesBefore,
+    this.isAutoRecord = false,
   })  : repeatWeekdays =
             repeatWeekdays != null ? List<int>.from(repeatWeekdays) : [],
         excludedDates =
@@ -33,6 +40,47 @@ class Schedule {
     return '$y-$m-$day';
   }
 
+  /// 일정 시간('HH:mm')에서 prepMinutesBefore만큼 뺀 준비시간('HH:mm') 반환
+  String? get prepTimeString {
+    if (prepMinutesBefore == null) return null;
+    final parts = time.split(':');
+    final hour = int.tryParse(parts.firstOrNull ?? '9') ?? 9;
+    final minute = int.tryParse(parts.length > 1 ? parts[1] : '0') ?? 0;
+
+    int totalMinutes = (hour * 60 + minute) - prepMinutesBefore!;
+    while (totalMinutes < 0) {
+      totalMinutes += 24 * 60;
+    }
+    totalMinutes = totalMinutes % (24 * 60);
+
+    final prepH = (totalMinutes ~/ 60).toString().padLeft(2, '0');
+    final prepM = (totalMinutes % 60).toString().padLeft(2, '0');
+    return '$prepH:$prepM';
+  }
+
+  /// 카드 및 다이얼로그에 표시할 준비시간 요약 텍스트
+  String? get prepSummaryText {
+    final pTime = prepTimeString;
+    if (pTime == null || prepMinutesBefore == null) return null;
+    if (prepMinutesBefore == 0) {
+      return '준비 $pTime (정각)';
+    }
+    if (prepMinutesBefore! % 60 == 0 && prepMinutesBefore! >= 60) {
+      return '준비 $pTime (${prepMinutesBefore! ~/ 60}시간 전)';
+    }
+    return '준비 $pTime ($prepMinutesBefore분 전)';
+  }
+
+  /// 특정 날짜 기준 준비시간의 정확한 DateTime 반환
+  DateTime? prepDateTimeForDay(DateTime day) {
+    if (prepMinutesBefore == null) return null;
+    final parts = time.split(':');
+    final hour = int.tryParse(parts.firstOrNull ?? '9') ?? 9;
+    final minute = int.tryParse(parts.length > 1 ? parts[1] : '0') ?? 0;
+    final scheduleDt = DateTime(day.year, day.month, day.day, hour, minute);
+    return scheduleDt.subtract(Duration(minutes: prepMinutesBefore!));
+  }
+
   Schedule copyWith({
     String? id,
     DateTime? date,
@@ -45,6 +93,9 @@ class Schedule {
     int? repeatCount,
     bool clearRepeatCount = false,
     List<String>? excludedDates,
+    int? prepMinutesBefore,
+    bool clearPrepMinutesBefore = false,
+    bool? isAutoRecord,
   }) {
     return Schedule(
       id: id ?? this.id,
@@ -61,6 +112,10 @@ class Schedule {
       excludedDates: excludedDates != null
           ? List<String>.from(excludedDates)
           : List<String>.from(this.excludedDates),
+      prepMinutesBefore: clearPrepMinutesBefore
+          ? null
+          : (prepMinutesBefore ?? this.prepMinutesBefore),
+      isAutoRecord: isAutoRecord ?? this.isAutoRecord,
     );
   }
 
@@ -130,10 +185,12 @@ class Schedule {
       'repeatEndDate': repeatEndDate?.toIso8601String(),
       'repeatCount': repeatCount,
       'excludedDates': excludedDates,
+      'prepMinutesBefore': prepMinutesBefore,
+      'isAutoRecord': isAutoRecord,
     };
   }
 
- factory Schedule.fromJson(Map<String, dynamic> json) {
+  factory Schedule.fromJson(Map<String, dynamic> json) {
     DateTime parsedDate;
     final rawDate = json['date'];
     if (rawDate is String) {
@@ -161,6 +218,8 @@ class Schedule {
               ?.map((e) => e.toString())
               .toList() ??
           [],
+      prepMinutesBefore: (json['prepMinutesBefore'] as num?)?.toInt(),
+      isAutoRecord: (json['isAutoRecord'] as bool?) ?? false,
     );
   }
 

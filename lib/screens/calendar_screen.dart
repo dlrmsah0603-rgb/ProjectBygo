@@ -1,6 +1,9 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:table_calendar/table_calendar.dart';
 import '../models/schedule_model.dart';
 import '../models/situation_model.dart';
@@ -29,6 +32,8 @@ class CalendarScreen extends StatefulWidget {
   final ValueChanged<List<Schedule>> onSchedulesChanged;
   final ValueChanged<List<Situation>> onSituationsChanged;
   final bool showTips;
+  final List<String>? tagOrder;
+  final ValueChanged<List<String>>? onTagOrderChanged;
 
   const CalendarScreen({
     super.key,
@@ -37,6 +42,8 @@ class CalendarScreen extends StatefulWidget {
     required this.onSchedulesChanged,
     required this.onSituationsChanged,
     this.showTips = true,
+    this.tagOrder,
+    this.onTagOrderChanged,
   });
 
   @override
@@ -44,6 +51,8 @@ class CalendarScreen extends StatefulWidget {
 }
 
 class _CalendarScreenState extends State<CalendarScreen> {
+  static const String _tagOrderPrefKey = 'bygo_calendar_tag_order';
+
   CalendarViewStage _viewStage = CalendarViewStage.month;
   DateTime _focusedDay = DateTime.now();
   DateTime? _selectedDay = DateTime.now();
@@ -52,12 +61,18 @@ class _CalendarScreenState extends State<CalendarScreen> {
   bool _isSearching = false;
   final TextEditingController _searchController = TextEditingController();
 
+  // 태그 순서 관리
+  List<String> _customTagOrder = [];
+
   // 실시간 드래그 추적 상태
   bool _isDraggingBar = false;
   double? _dragCalendarHeight;
 
+  // 준비시간 푸시 알림 타이머
+  Timer? _prepNotificationTimer;
+
   static const double _baseRowHeight = 58.0;
-  static const double _calendarChromeHeight = 78.0; // 헤더(56) + 요일표시줄(22)
+  static const double _calendarChromeHeight = 78.0;
   static const double _handleBarHeight = 52.0;
 
   static const List<String> _weekdayLabels = [
@@ -70,10 +85,242 @@ class _CalendarScreenState extends State<CalendarScreen> {
     '일',
   ];
 
+  static const List<int?> _prepPresetMinutes = [
+    null, // 설정 안 함
+    0, // 정각
+    10, // 10분 전
+    15, // 15분 전
+    30, // 30분 전
+    60, // 1시간 전
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.tagOrder != null) {
+      _customTagOrder = List<String>.from(widget.tagOrder!);
+    }
+    _loadSavedTagOrder();
+    _startPrepNotificationTimer();
+  }
+
+  @override
+  void didUpdateWidget(covariant CalendarScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.tagOrder != null && widget.tagOrder != oldWidget.tagOrder) {
+      _customTagOrder = List<String>.from(widget.tagOrder!);
+    }
+  }
+
   @override
   void dispose() {
+    _prepNotificationTimer?.cancel();
     _searchController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadSavedTagOrder() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getStringList(_tagOrderPrefKey);
+      if (saved != null && saved.isNotEmpty && mounted) {
+        setState(() {
+          _customTagOrder = List<String>.from(saved);
+        });
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _saveTagOrder(List<String> newOrder) async {
+    setState(() {
+      _customTagOrder = List<String>.from(newOrder);
+    });
+    widget.onTagOrderChanged?.call(_customTagOrder);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(_tagOrderPrefKey, _customTagOrder);
+    } catch (_) {}
+  }
+
+  void _startPrepNotificationTimer() {
+    _prepNotificationTimer?.cancel();
+    // 10초마다 준비시간 도달 여부 확인
+    _prepNotificationTimer = Timer.periodic(
+      const Duration(seconds: 10),
+      (_) => _checkAndTriggerPrepNotifications(),
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _checkAndTriggerPrepNotifications();
+    });
+  }
+
+  void _checkAndTriggerPrepNotifications() {
+    if (!mounted) return;
+    final now = DateTime.now();
+    final today = _dateOnly(now);
+    final todayKey = Schedule.dateKey(today);
+
+    for (final sc in widget.schedules) {
+      if (sc.prepMinutesBefore == null || sc.isAutoRecord) continue;
+      if (!sc.occursOn(today)) continue;
+
+      final prepDt = sc.prepDateTimeForDay(today);
+      if (prepDt == null) continue;
+
+      final diffSeconds = now.difference(prepDt).inSeconds;
+      // 준비시간 정각부터 5분 이내이고 아직 알림을 보내지 않은 경우触发
+      if (diffSeconds >= 0 && diffSeconds <= 300) {
+        final notifyKey = '${sc.id}_${todayKey}_${sc.prepMinutesBefore}';
+        if (Schedule.notifiedKeys.contains(notifyKey)) continue;
+
+        Schedule.notifiedKeys.add(notifyKey);
+        _showPrepPushNotification(sc);
+      }
+    }
+  }
+
+  void _showPrepPushNotification(Schedule schedule) {
+    if (!mounted) return;
+    HapticFeedback.heavyImpact();
+    SystemSound.play(SystemSoundType.alert);
+
+    final linkedSit = _findSituationByTag(schedule.tag);
+    final prepLabel = schedule.prepSummaryText ?? '준비시간';
+    final statusText = linkedSit != null
+        ? (linkedSit.isAllChecked
+            ? '체크리스트 완료됨 🎉'
+            : '체크리스트 진행 현황: ${linkedSit.checkedCount}/${linkedSit.items.length}')
+        : '일정 시간: ${schedule.time}';
+
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.clearMaterialBanners();
+    messenger.showMaterialBanner(
+      MaterialBanner(
+        elevation: 4,
+        backgroundColor: Theme.of(context).colorScheme.primaryContainer,
+        leading: CircleAvatar(
+          backgroundColor: Theme.of(context).colorScheme.primary,
+          child: const Icon(
+            Icons.notifications_active,
+            color: Colors.white,
+          ),
+        ),
+        content: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              '⏰ [$prepLabel] ${schedule.title} (${schedule.time})',
+              style: const TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 14,
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              '체크리스트를 확인할 시간입니다! ($statusText)',
+              style: const TextStyle(fontSize: 12),
+            ),
+          ],
+        ),
+        actions: [
+          if (linkedSit != null)
+            FilledButton.tonal(
+              onPressed: () {
+                messenger.hideCurrentMaterialBanner();
+                _showChecklistBottomSheet(schedule, linkedSit);
+              },
+              child: const Text('체크리스트 열기'),
+            ),
+          TextButton(
+            onPressed: () => messenger.hideCurrentMaterialBanner(),
+            child: const Text('닫기'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 체크리스트가 모두 완료되었을 때 오늘 날짜에 기록용 일정을 자동 등록
+  void _registerCompletedChecklistToCalendar(Situation situation) {
+    final now = DateTime.now();
+    final today = _dateOnly(now);
+    final hh = now.hour.toString().padLeft(2, '0');
+    final mm = now.minute.toString().padLeft(2, '0');
+    final currentTimeStr = '$hh:$mm';
+    final recordTitle = '${situation.name} 시작';
+
+    Schedule? existingTodayRecord;
+    for (final sc in widget.schedules) {
+      if (sc.isAutoRecord &&
+          sc.tag.trim() == situation.tag.trim() &&
+          isSameDay(sc.date, today)) {
+        existingTodayRecord = sc;
+        break;
+      }
+    }
+
+    Schedule? addedOrUpdated;
+    bool wasAdded = false;
+
+    setState(() {
+      if (existingTodayRecord != null) {
+        existingTodayRecord.time = currentTimeStr;
+        existingTodayRecord.title = recordTitle;
+        addedOrUpdated = existingTodayRecord;
+        wasAdded = false;
+      } else {
+        addedOrUpdated = Schedule(
+          id: 'record_${now.microsecondsSinceEpoch}',
+          date: today,
+          title: recordTitle,
+          time: currentTimeStr,
+          tag: situation.tag,
+          isAutoRecord: true,
+        );
+        widget.schedules.add(addedOrUpdated!);
+        wasAdded = true;
+      }
+    });
+
+    widget.onSchedulesChanged(widget.schedules);
+    _saveSchedulesDirectlyToPrefs();
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).clearSnackBars();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          "🎉 '${situation.name}' 체크리스트 완료! 캘린더에 기록 일정이 자동 등록되었습니다.",
+        ),
+        behavior: SnackBarBehavior.floating,
+        action: wasAdded
+            ? SnackBarAction(
+                label: '실행 취소',
+                onPressed: () {
+                  HapticFeedback.lightImpact();
+                  setState(() {
+                    if (addedOrUpdated != null) {
+                      widget.schedules.remove(addedOrUpdated);
+                    }
+                  });
+                  widget.onSchedulesChanged(widget.schedules);
+                  _saveSchedulesDirectlyToPrefs();
+                },
+              )
+            : null,
+      ),
+    );
+  }
+
+  Future<void> _saveSchedulesDirectlyToPrefs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final encoded = jsonEncode(
+        widget.schedules.map((s) => s.toJson()).toList(),
+      );
+      await prefs.setString('schedules', encoded);
+    } catch (_) {}
   }
 
   DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
@@ -96,7 +343,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
   int _getWeekRowCount(DateTime monthDate) {
     final firstOfMonth = DateTime(monthDate.year, monthDate.month, 1);
     final lastOfMonth = DateTime(monthDate.year, monthDate.month + 1, 0);
-    final firstDayOffset = firstOfMonth.weekday % 7; // 일요일 시작 기준
+    final firstDayOffset = firstOfMonth.weekday % 7;
     final totalCells = firstDayOffset + lastOfMonth.day;
     return (totalCells / 7.0).ceil().clamp(4, 6);
   }
@@ -210,6 +457,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
     });
   }
 
+  /// 사용자 지정 순서가 반영된 전체 태그 리스트
   List<String> get _allAvailableTags {
     final tagSet = <String>{};
     for (final s in widget.situations) {
@@ -218,7 +466,16 @@ class _CalendarScreenState extends State<CalendarScreen> {
     for (final sc in widget.schedules) {
       if (sc.tag.trim().isNotEmpty) tagSet.add(sc.tag.trim());
     }
-    return tagSet.toList();
+
+    final ordered = <String>[];
+    for (final t in _customTagOrder) {
+      if (tagSet.contains(t)) {
+        ordered.add(t);
+        tagSet.remove(t);
+      }
+    }
+    ordered.addAll(tagSet);
+    return ordered;
   }
 
   Situation? _findSituationByTag(String tag) {
@@ -383,7 +640,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
     );
   }
 
-  /// 단일 일정은 즉시 삭제, 반복 일정은 예외 범위 선택 후 삭제 처리
   Future<void> _requestDeleteSchedule(
     Schedule schedule,
     DateTime occurrenceDate,
@@ -451,6 +707,27 @@ class _CalendarScreenState extends State<CalendarScreen> {
     _showUndoSnackBar(snackMsg, snapshot);
   }
 
+  String _prepPresetLabel(int? minutes) {
+    if (minutes == null) return '설정 안 함';
+    if (minutes == 0) return '정각';
+    if (minutes == 60) return '1시간 전';
+    return '$minutes분 전';
+  }
+
+  String _calculatePreviewPrepTime(String scheduleTimeText, int prepMinutes) {
+    final parts = scheduleTimeText.split(':');
+    final h = int.tryParse(parts.firstOrNull ?? '9') ?? 9;
+    final m = int.tryParse(parts.length > 1 ? parts[1] : '0') ?? 0;
+    int total = (h * 60 + m) - prepMinutes;
+    while (total < 0) {
+      total += 24 * 60;
+    }
+    total = total % (24 * 60);
+    final hh = (total ~/ 60).toString().padLeft(2, '0');
+    final mm = (total % 60).toString().padLeft(2, '0');
+    return '$hh:$mm';
+  }
+
   void _showScheduleDialog({
     Schedule? existing,
     DateTime? defaultDate,
@@ -469,6 +746,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
     );
     final tagController = TextEditingController(text: existing?.tag ?? '');
     final selectedWeekdays = List<int>.from(existing?.repeatWeekdays ?? []);
+    int? selectedPrepMinutes = existing?.prepMinutesBefore;
 
     _RepeatEndType repeatEndType = _RepeatEndType.none;
     if (existing?.repeatEndDate != null) {
@@ -490,6 +768,9 @@ class _CalendarScreenState extends State<CalendarScreen> {
       builder: (ctx) {
         return StatefulBuilder(
           builder: (ctx, setDialogState) {
+            final isCustomPrep = selectedPrepMinutes != null &&
+                !_prepPresetMinutes.contains(selectedPrepMinutes);
+
             return AlertDialog(
               title: Text(existing == null ? '일정 추가' : '일정 수정'),
               content: SingleChildScrollView(
@@ -546,7 +827,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                             controller: timeController,
                             readOnly: true,
                             decoration: const InputDecoration(
-                              labelText: '시간',
+                              labelText: '일정 시간',
                               prefixIcon: Icon(Icons.access_time),
                               border: OutlineInputBorder(),
                             ),
@@ -590,6 +871,117 @@ class _CalendarScreenState extends State<CalendarScreen> {
                         ),
                       ],
                     ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      '준비시간 및 푸시 알림 (체크리스트 확인 시간)',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: [
+                        ..._prepPresetMinutes.map((presetMin) {
+                          final isSelected = selectedPrepMinutes == presetMin;
+                          return ChoiceChip(
+                            label: Text(
+                              _prepPresetLabel(presetMin),
+                              style: const TextStyle(fontSize: 12),
+                            ),
+                            selected: isSelected,
+                            onSelected: (_) {
+                              HapticFeedback.selectionClick();
+                              setDialogState(() {
+                                selectedPrepMinutes = presetMin;
+                              });
+                            },
+                          );
+                        }),
+                        ActionChip(
+                          avatar: const Icon(Icons.alarm, size: 16),
+                          backgroundColor: isCustomPrep
+                              ? Theme.of(context)
+                                  .colorScheme
+                                  .primaryContainer
+                              : null,
+                          label: Text(
+                            isCustomPrep
+                                ? '직접 지정 (${_calculatePreviewPrepTime(timeController.text, selectedPrepMinutes!)})'
+                                : '직접 시간 지정',
+                            style: const TextStyle(fontSize: 12),
+                          ),
+                          onPressed: () async {
+                            final sParts = timeController.text.split(':');
+                            final sHour =
+                                int.tryParse(sParts.firstOrNull ?? '9') ?? 9;
+                            final sMin = int.tryParse(
+                                  sParts.length > 1 ? sParts[1] : '0',
+                                ) ??
+                                0;
+
+                            final picked = await showTimePicker(
+                              context: ctx,
+                              helpText: '체크리스트를 확인할 준비시간 선택',
+                              initialTime: TimeOfDay(
+                                hour: (sHour - 1).clamp(0, 23),
+                                minute: sMin,
+                              ),
+                            );
+                            if (picked != null) {
+                              final scheduleTotal = sHour * 60 + sMin;
+                              final pickedTotal =
+                                  picked.hour * 60 + picked.minute;
+                              int diff = scheduleTotal - pickedTotal;
+                              if (diff < 0) {
+                                diff += 24 * 60;
+                              }
+                              setDialogState(() {
+                                selectedPrepMinutes = diff;
+                              });
+                            }
+                          },
+                        ),
+                      ],
+                    ),
+                    if (selectedPrepMinutes != null) ...[
+                      const SizedBox(height: 8),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 8,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Theme.of(context)
+                              .colorScheme
+                              .primaryContainer
+                              .withValues(alpha: 0.45),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              Icons.notifications_active_outlined,
+                              size: 16,
+                              color: Theme.of(context).colorScheme.primary,
+                            ),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: Text(
+                                '준비시간 ${_calculatePreviewPrepTime(timeController.text, selectedPrepMinutes!)}에 체크리스트 푸시 알림이 울립니다.',
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                     const SizedBox(height: 16),
                     const Text(
                       '요일 반복 설정 (선택 시 매주 반복)',
@@ -916,7 +1308,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
                             .clamp(1, 9999)
                         : null;
 
-                    // 1. 새 일정 추가인 경우
                     if (existing == null) {
                       HapticFeedback.mediumImpact();
                       setState(() {
@@ -934,15 +1325,16 @@ class _CalendarScreenState extends State<CalendarScreen> {
                             repeatWeekdays: selectedWeekdays,
                             repeatEndDate: newEndDate,
                             repeatCount: newRepeatCount,
+                            prepMinutesBefore: selectedPrepMinutes,
                           ),
                         );
                       });
                       widget.onSchedulesChanged(widget.schedules);
                       Navigator.pop(ctx);
+                      _checkAndTriggerPrepNotifications();
                       return;
                     }
 
-                    // 2. 기존 단일 일정 수정인 경우
                     if (!existing.isRepeating) {
                       HapticFeedback.mediumImpact();
                       setState(() {
@@ -955,13 +1347,14 @@ class _CalendarScreenState extends State<CalendarScreen> {
                         existing.repeatWeekdays = selectedWeekdays;
                         existing.repeatEndDate = newEndDate;
                         existing.repeatCount = newRepeatCount;
+                        existing.prepMinutesBefore = selectedPrepMinutes;
                       });
                       widget.onSchedulesChanged(widget.schedules);
                       Navigator.pop(ctx);
+                      _checkAndTriggerPrepNotifications();
                       return;
                     }
 
-                    // 3. 기존 반복 일정 수정인 경우 -> 예외 처리 적용 범위 선택
                     final scope = await _showRepeatScopeDialog(
                       title: '반복 일정 변경',
                       targetDate: activeOccurrenceDay,
@@ -976,7 +1369,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
                     setState(() {
                       switch (scope) {
                         case _RepeatActionScope.onlyThis:
-                          // 선택한 날짜를 기존 반복에서 제외하고 해당 날짜의 단일 일정 생성
                           final key = Schedule.dateKey(activeOccurrenceDay);
                           if (!existing.excludedDates.contains(key)) {
                             existing.excludedDates.add(key);
@@ -991,6 +1383,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                               time: cleanTime,
                               tag: cleanTag,
                               repeatWeekdays: [],
+                              prepMinutesBefore: selectedPrepMinutes,
                             ),
                           );
                           break;
@@ -1003,7 +1396,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                   : activeOccurrenceDay;
 
                           if (!activeOccurrenceDay.isAfter(origStart)) {
-                            // 시작일 당일(또는 이전)부터 이후 전체 변경이면 원본 자체를 업데이트
                             existing.date = splitStart;
                             existing.title = title;
                             existing.time = cleanTime;
@@ -1011,13 +1403,12 @@ class _CalendarScreenState extends State<CalendarScreen> {
                             existing.repeatWeekdays = selectedWeekdays;
                             existing.repeatEndDate = newEndDate;
                             existing.repeatCount = newRepeatCount;
+                            existing.prepMinutesBefore = selectedPrepMinutes;
                           } else {
-                            // 원본 일정은 선택일 전날까지만 반복되도록 종료일 설정
                             existing.repeatEndDate = activeOccurrenceDay
                                 .subtract(const Duration(days: 1));
                             existing.repeatCount = null;
 
-                            // 선택한 날짜부터 새로운 반복(또는 단일) 일정 추가
                             widget.schedules.add(
                               Schedule(
                                 id: DateTime.now()
@@ -1030,6 +1421,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                 repeatWeekdays: selectedWeekdays,
                                 repeatEndDate: newEndDate,
                                 repeatCount: newRepeatCount,
+                                prepMinutesBefore: selectedPrepMinutes,
                               ),
                             );
                           }
@@ -1045,6 +1437,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                           existing.repeatWeekdays = selectedWeekdays;
                           existing.repeatEndDate = newEndDate;
                           existing.repeatCount = newRepeatCount;
+                          existing.prepMinutesBefore = selectedPrepMinutes;
                           break;
                       }
                     });
@@ -1053,6 +1446,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                     if (ctx.mounted) {
                       Navigator.pop(ctx);
                     }
+                    _checkAndTriggerPrepNotifications();
                   },
                   child: const Text('저장'),
                 ),
@@ -1112,7 +1506,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                               Text(
                                 isComplete
                                     ? '외출 준비 완료! 🎉'
-                                    : '소지품 챙김 현황: $checked / $total개 (${(progress * 100).round()}%)',
+                                    : '체크리스트 진행 현황: $checked / $total개 (${(progress * 100).round()}%)',
                                 style: TextStyle(
                                   fontSize: 13,
                                   color: isComplete
@@ -1129,6 +1523,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                         if (total > 0)
                           TextButton.icon(
                             onPressed: () {
+                              final wasAllChecked = situation.isAllChecked;
                               final target = !isComplete;
                               if (target) {
                                 HapticFeedback.heavyImpact();
@@ -1142,6 +1537,11 @@ class _CalendarScreenState extends State<CalendarScreen> {
                               });
                               setState(() {});
                               widget.onSituationsChanged(widget.situations);
+                              if (!wasAllChecked && situation.isAllChecked) {
+                                _registerCompletedChecklistToCalendar(
+                                  situation,
+                                );
+                              }
                             },
                             icon: Icon(
                               isComplete ? Icons.restart_alt : Icons.done_all,
@@ -1167,7 +1567,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                         padding: EdgeInsets.symmetric(vertical: 20),
                         child: Center(
                           child: Text(
-                            '등록된 소지품이 없습니다. [상황·소지품] 탭에서 항목을 추가해 보세요.',
+                            '등록된 체크리스트가 없습니다. [상황·체크리스트] 탭에서 항목을 추가해 보세요.',
                           ),
                         ),
                       )
@@ -1191,6 +1591,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                 ),
                               ),
                               onChanged: (val) {
+                                final wasAllChecked = situation.isAllChecked;
                                 setSheetState(() {
                                   item.isChecked = val ?? false;
                                 });
@@ -1201,6 +1602,11 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                 }
                                 setState(() {});
                                 widget.onSituationsChanged(widget.situations);
+                                if (!wasAllChecked && situation.isAllChecked) {
+                                  _registerCompletedChecklistToCalendar(
+                                    situation,
+                                  );
+                                }
                               },
                             );
                           },
@@ -1216,12 +1622,108 @@ class _CalendarScreenState extends State<CalendarScreen> {
     );
   }
 
+  Widget _buildTagChipContent(
+    String tag,
+    Situation? sit,
+    bool isSelected, {
+    bool isFeedback = false,
+  }) {
+    return Material(
+      color: Colors.transparent,
+      elevation: isFeedback ? 4 : 0,
+      borderRadius: BorderRadius.circular(8),
+      child: FilterChip(
+        avatar: sit != null
+            ? Icon(
+                sit.iconData,
+                size: 16,
+                color: sit.color,
+              )
+            : null,
+        label: Text('#$tag'),
+        selected: isSelected,
+        onSelected: (selected) {
+          HapticFeedback.selectionClick();
+          setState(() {
+            _selectedFilterTag = selected ? tag : null;
+          });
+        },
+      ),
+    );
+  }
+
+  Widget _buildReorderableTagBar(List<String> tags) {
+    return Row(
+      children: [
+        FilterChip(
+          label: const Text('전체'),
+          selected: _selectedFilterTag == null,
+          onSelected: (_) {
+            HapticFeedback.selectionClick();
+            setState(() => _selectedFilterTag = null);
+          },
+        ),
+        const SizedBox(width: 8),
+        ...tags.map((tag) {
+          final sit = _findSituationByTag(tag);
+          final isSelected = _selectedFilterTag == tag;
+
+          return Padding(
+            key: ValueKey('tag_chip_$tag'),
+            padding: const EdgeInsets.only(right: 8),
+            child: DragTarget<String>(
+              onWillAcceptWithDetails: (details) {
+                final draggedTag = details.data;
+                if (draggedTag == tag) return false;
+
+                final currentList = List<String>.from(tags);
+                final oldIdx = currentList.indexOf(draggedTag);
+                final newIdx = currentList.indexOf(tag);
+                if (oldIdx != -1 && newIdx != -1 && oldIdx != newIdx) {
+                  HapticFeedback.selectionClick();
+                  currentList.removeAt(oldIdx);
+                  currentList.insert(newIdx, draggedTag);
+                  _saveTagOrder(currentList);
+                }
+                return true;
+              },
+              builder: (context, candidateData, rejectedData) {
+                return LongPressDraggable<String>(
+                  data: tag,
+                  delay: const Duration(milliseconds: 300),
+                  onDragStarted: () => HapticFeedback.mediumImpact(),
+                  feedback: Transform.scale(
+                    scale: 1.06,
+                    child: _buildTagChipContent(
+                      tag,
+                      sit,
+                      isSelected,
+                      isFeedback: true,
+                    ),
+                  ),
+                  childWhenDragging: Opacity(
+                    opacity: 0.35,
+                    child: _buildTagChipContent(tag, sit, isSelected),
+                  ),
+                  child: _buildTagChipContent(tag, sit, isSelected),
+                );
+              },
+            ),
+          );
+        }),
+      ],
+    );
+  }
+
   Widget _buildTableCalendar({
     required CalendarFormat format,
     required double rowHeight,
     required int maxMarkers,
     required Map<CalendarViewStage, double> stageHeights,
   }) {
+    final primaryColor = Theme.of(context).colorScheme.primary;
+    final onPrimaryColor = Theme.of(context).colorScheme.onPrimary;
+
     return GestureDetector(
       behavior: HitTestBehavior.translucent,
       onVerticalDragStart: (d) => _onBarDragStart(d, stageHeights),
@@ -1267,15 +1769,23 @@ class _CalendarScreenState extends State<CalendarScreen> {
           headerPadding: EdgeInsets.symmetric(vertical: 4),
           headerMargin: EdgeInsets.zero,
         ),
-        calendarStyle: const CalendarStyle(
-          cellMargin: EdgeInsets.all(2),
+        calendarStyle: CalendarStyle(
+          cellMargin: const EdgeInsets.all(2),
           todayDecoration: BoxDecoration(
-            color: Colors.indigoAccent,
+            color: primaryColor.withValues(alpha: 0.45),
             shape: BoxShape.circle,
           ),
+          todayTextStyle: TextStyle(
+            color: onPrimaryColor,
+            fontWeight: FontWeight.bold,
+          ),
           selectedDecoration: BoxDecoration(
-            color: Colors.indigo,
+            color: primaryColor,
             shape: BoxShape.circle,
+          ),
+          selectedTextStyle: TextStyle(
+            color: onPrimaryColor,
+            fontWeight: FontWeight.bold,
           ),
         ),
         calendarBuilders: CalendarBuilders(
@@ -1291,7 +1801,9 @@ class _CalendarScreenState extends State<CalendarScreen> {
                 mainAxisSize: MainAxisSize.min,
                 children: events.take(maxMarkers).map((sc) {
                   final sit = _findSituationByTag(sc.tag);
-                  final badgeColor = sit?.color ?? Colors.blue;
+                  final badgeColor = sc.isAutoRecord
+                      ? Colors.green
+                      : (sit?.color ?? primaryColor);
                   return Container(
                     width: double.infinity,
                     margin: const EdgeInsets.symmetric(vertical: 0.5),
@@ -1332,6 +1844,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
     required Map<CalendarViewStage, double> stageHeights,
   }) {
     final primaryColor = Theme.of(context).colorScheme.primary;
+    final onPrimaryColor = Theme.of(context).colorScheme.onPrimary;
 
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
@@ -1427,7 +1940,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                   ? FontWeight.bold
                                   : FontWeight.w500,
                               color: isSelected
-                                  ? Colors.white
+                                  ? onPrimaryColor
                                   : Colors.grey.shade700,
                             ),
                           ),
@@ -1498,9 +2011,11 @@ class _CalendarScreenState extends State<CalendarScreen> {
         itemBuilder: (context, index) {
           final sc = selectedEvents[index];
           final linkedSit = _findSituationByTag(sc.tag);
-          final isComplete = linkedSit?.isAllChecked ?? false;
-          final cardColor =
-              isComplete ? Colors.green : (linkedSit?.color ?? Colors.blue);
+          final isComplete =
+              sc.isAutoRecord || (linkedSit?.isAllChecked ?? false);
+          final cardColor = isComplete
+              ? Colors.green
+              : (linkedSit?.color ?? Theme.of(context).colorScheme.primary);
 
           return Dismissible(
             key: ValueKey('${sc.id}_${Schedule.dateKey(activeDay)}'),
@@ -1552,6 +2067,27 @@ class _CalendarScreenState extends State<CalendarScreen> {
                 ),
                 title: Row(
                   children: [
+                    if (sc.isAutoRecord) ...[
+                      Container(
+                        margin: const EdgeInsets.only(right: 6),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.green.withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: const Text(
+                          '기록',
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.green,
+                          ),
+                        ),
+                      ),
+                    ],
                     Flexible(
                       child: Text(
                         sc.title,
@@ -1589,24 +2125,51 @@ class _CalendarScreenState extends State<CalendarScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const SizedBox(height: 4),
-                    Row(
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 4,
+                      crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
-                        const Icon(Icons.access_time, size: 14),
-                        const SizedBox(width: 4),
-                        Text(sc.time),
-                        if (sc.isRepeating) ...[
-                          const SizedBox(width: 8),
-                          const Icon(Icons.repeat, size: 14),
-                          const SizedBox(width: 2),
-                          Flexible(
-                            child: Text(
-                              _buildRepeatSummaryText(sc),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontSize: 12),
-                            ),
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.access_time, size: 14),
+                            const SizedBox(width: 4),
+                            Text(sc.time),
+                          ],
+                        ),
+                        if (sc.prepSummaryText != null)
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.notifications_active_outlined,
+                                size: 14,
+                                color: cardColor,
+                              ),
+                              const SizedBox(width: 3),
+                              Text(
+                                sc.prepSummaryText!,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  color: cardColor,
+                                ),
+                              ),
+                            ],
                           ),
-                        ],
+                        if (sc.isRepeating)
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.repeat, size: 14),
+                              const SizedBox(width: 2),
+                              Text(
+                                _buildRepeatSummaryText(sc),
+                                style: const TextStyle(fontSize: 12),
+                              ),
+                            ],
+                          ),
                       ],
                     ),
                     if (linkedSit != null && linkedSit.items.isNotEmpty) ...[
@@ -1628,7 +2191,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                           ),
                           const SizedBox(width: 8),
                           Text(
-                            '소지품 ${linkedSit.checkedCount}/${linkedSit.items.length}',
+                            '체크리스트 ${linkedSit.checkedCount}/${linkedSit.items.length}',
                             style: TextStyle(
                               fontSize: 11,
                               fontWeight: FontWeight.bold,
@@ -1649,7 +2212,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                           Icons.checklist_rtl,
                           color: cardColor,
                         ),
-                        tooltip: '소지품 체크리스트 열기',
+                        tooltip: '체크리스트 열기',
                         onPressed: () => _showChecklistBottomSheet(
                           sc,
                           linkedSit,
@@ -1692,42 +2255,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                 Expanded(
                   child: SingleChildScrollView(
                     scrollDirection: Axis.horizontal,
-                    child: Row(
-                      children: [
-                        FilterChip(
-                          label: const Text('전체'),
-                          selected: _selectedFilterTag == null,
-                          onSelected: (_) {
-                            HapticFeedback.selectionClick();
-                            setState(() => _selectedFilterTag = null);
-                          },
-                        ),
-                        const SizedBox(width: 8),
-                        ...tags.map((tag) {
-                          final sit = _findSituationByTag(tag);
-                          return Padding(
-                            padding: const EdgeInsets.only(right: 8),
-                            child: FilterChip(
-                              avatar: sit != null
-                                  ? Icon(
-                                      sit.iconData,
-                                      size: 16,
-                                      color: sit.color,
-                                    )
-                                  : null,
-                              label: Text('#$tag'),
-                              selected: _selectedFilterTag == tag,
-                              onSelected: (selected) {
-                                HapticFeedback.selectionClick();
-                                setState(() {
-                                  _selectedFilterTag = selected ? tag : null;
-                                });
-                              },
-                            ),
-                          );
-                        }),
-                      ],
-                    ),
+                    child: _buildReorderableTagBar(tags),
                   ),
                 ),
                 IconButton(
@@ -1776,7 +2304,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                   const SizedBox(width: 4),
                   Expanded(
                     child: Text(
-                      '팁: 바를 잡고 위·아래로 움직여 2주 / 한달 / 확장 위치로 조절하세요.',
+                      '팁: #태그 버튼을 꾹 눌러 순서를 바꾸고, 바를 움직여 2주/한달/확장을 조절하세요.',
                       style: TextStyle(
                         fontSize: 11,
                         color: Colors.grey.shade600,

@@ -20,20 +20,20 @@ class BygoApp extends StatefulWidget {
 }
 
 class _BygoAppState extends State<BygoApp> {
-  bool _isDarkMode = false;
-  int _themeColorValue = Colors.indigo.toARGB32();
+  final StorageService _storage = StorageService();
+  final PageController _pageController = PageController();
+
+  List<Schedule> _schedules = [];
+  List<Situation> _situations = [];
+  ThemeMode _themeMode = ThemeMode.system;
+  int _seedColorValue = Colors.indigo.toARGB32();
   bool _showTips = true;
   int _currentIndex = 0;
-  late final PageController _pageController;
-
-  List<Situation> _situations = [];
-  List<Schedule> _schedules = [];
-  bool _isLoading = true;
+  bool _isLoaded = false;
 
   @override
   void initState() {
     super.initState();
-    _pageController = PageController(initialPage: _currentIndex);
     _loadInitialData();
   }
 
@@ -43,239 +43,175 @@ class _BygoAppState extends State<BygoApp> {
     super.dispose();
   }
 
-  List<Situation> _createDefaultPresets() {
-    return [
-      Situation(
-        id: 'preset_work',
-        name: '출근',
-        tag: '출근',
-        iconCodePoint: Icons.work.codePoint,
-        colorValue: Colors.blue.toARGB32(),
-        items: [
-          ChecklistItem(id: 'w1', name: '지갑 / 사원증'),
-          ChecklistItem(id: 'w2', name: '무선 이어폰'),
-          ChecklistItem(id: 'w3', name: '노트북 & 충전기'),
-          ChecklistItem(id: 'w4', name: '텀블러'),
-        ],
-      ),
-      Situation(
-        id: 'preset_gym',
-        name: '운동',
-        tag: '운동',
-        iconCodePoint: Icons.fitness_center.codePoint,
-        colorValue: Colors.orange.toARGB32(),
-        items: [
-          ChecklistItem(id: 'g1', name: '운동복 & 양말'),
-          ChecklistItem(id: 'g2', name: '실내 운동화'),
-          ChecklistItem(id: 'g3', name: '개인 물통 / 쉐이커'),
-          ChecklistItem(id: 'g4', name: '운동 스트랩'),
-        ],
-      ),
-      Situation(
-        id: 'preset_trip',
-        name: '여행',
-        tag: '여행',
-        iconCodePoint: Icons.flight_takeoff.codePoint,
-        colorValue: Colors.teal.toARGB32(),
-        items: [
-          ChecklistItem(id: 't1', name: '신분증 / 여권'),
-          ChecklistItem(id: 't2', name: '보조배터리 & 케이블'),
-          ChecklistItem(id: 't3', name: '세면도구 파우치'),
-          ChecklistItem(id: 't4', name: '상비약'),
-        ],
-      ),
-    ];
-  }
-
   Future<void> _loadInitialData() async {
-    final isDark = await StorageService.loadIsDarkMode();
-    final themeColor = await StorageService.loadThemeColor();
-    final showTips = await StorageService.loadShowTips();
-    var situations = await StorageService.loadSituations();
-    final schedules = await StorageService.loadSchedules();
-
-    if (situations.isEmpty) {
-      situations = _createDefaultPresets();
-      await StorageService.saveSituations(situations);
-    }
+    final schedules = await _storage.loadSchedules();
+    final situations = await _storage.loadSituations();
+    final themeMode = await _storage.loadThemeMode();
+    final seedColor = await _storage.loadSeedColor();
+    final showTips = await _storage.loadShowTips();
 
     if (!mounted) return;
     setState(() {
-      _isDarkMode = isDark;
-      _themeColorValue = themeColor;
-      _showTips = showTips;
-      _situations = situations;
       _schedules = schedules;
-      _isLoading = false;
+      _situations = situations;
+      _themeMode = themeMode;
+      _seedColorValue = seedColor;
+      _showTips = showTips;
+      _isLoaded = true;
     });
   }
 
-  void _navigateToTab(int index) {
-    if (_currentIndex == index) return;
-    HapticFeedback.selectionClick();
-    setState(() => _currentIndex = index);
-    if (_pageController.hasClients) {
-      _pageController.animateToPage(
-        index,
-        duration: const Duration(milliseconds: 280),
-        curve: Curves.easeOutCubic,
+  ThemeData _buildTheme(Brightness brightness) {
+    final isBlackAndWhite =
+        _seedColorValue == SettingsScreen.blackAndWhiteColorValue;
+
+    if (isBlackAndWhite) {
+      final isDark = brightness == Brightness.dark;
+      final bwScheme = isDark
+          ? const ColorScheme.dark(
+              primary: Colors.white,
+              onPrimary: Colors.black,
+              primaryContainer: Color(0xFF2C2C2C),
+              onPrimaryContainer: Colors.white,
+              secondary: Color(0xFFD0D0D0),
+              onSecondary: Colors.black,
+              surface: Color(0xFF121212),
+              onSurface: Colors.white,
+              surfaceContainerHighest: Color(0xFF262626),
+            )
+          : const ColorScheme.light(
+              primary: Colors.black,
+              onPrimary: Colors.white,
+              primaryContainer: Color(0xFFE6E6E6),
+              onPrimaryContainer: Colors.black,
+              secondary: Color(0xFF333333),
+              onSecondary: Colors.white,
+              surface: Colors.white,
+              onSurface: Colors.black,
+              surfaceContainerHighest: Color(0xFFEEEEEE),
+            );
+
+      return ThemeData(
+        useMaterial3: true,
+        brightness: brightness,
+        colorScheme: bwScheme,
+        scaffoldBackgroundColor: bwScheme.surface,
+        appBarTheme: AppBarTheme(
+          backgroundColor: bwScheme.surface,
+          foregroundColor: bwScheme.onSurface,
+          elevation: 0,
+        ),
       );
     }
-  }
 
-  Future<void> _updateDarkMode(bool isDark) async {
-    setState(() => _isDarkMode = isDark);
-    await StorageService.saveIsDarkMode(isDark);
-  }
-
-  Future<void> _updateThemeColor(int colorValue) async {
-    setState(() => _themeColorValue = colorValue);
-    await StorageService.saveThemeColor(colorValue);
-  }
-
-  Future<void> _updateShowTips(bool showTips) async {
-    setState(() => _showTips = showTips);
-    await StorageService.saveShowTips(showTips);
-  }
-
-  Future<void> _handleExportBackup(BuildContext context) async {
-    HapticFeedback.selectionClick();
-    try {
-      final path = await StorageService.exportBackupToFile();
-      if (!context.mounted || path == null) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('백업 파일이 저장되었습니다: $path')),
-      );
-    } catch (e) {
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('백업 실패: $e')),
-      );
-    }
-  }
-
-  Future<void> _handleImportBackup(BuildContext context) async {
-    HapticFeedback.selectionClick();
-    try {
-      final success = await StorageService.importBackupFromFile();
-      if (!success) return;
-      await _loadInitialData();
-      if (!context.mounted) return;
-      HapticFeedback.heavyImpact();
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('백업 데이터를 성공적으로 복원했습니다!')),
-      );
-    } catch (e) {
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('복원 실패: $e')),
-      );
-    }
+    return ThemeData(
+      useMaterial3: true,
+      brightness: brightness,
+      colorSchemeSeed: Color(_seedColorValue),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final seedColor = Color(_themeColorValue);
-
     return MaterialApp(
       title: 'Bygo',
       debugShowCheckedModeBanner: false,
-      themeMode: _isDarkMode ? ThemeMode.dark : ThemeMode.light,
-      theme: ThemeData(
-        colorSchemeSeed: seedColor,
-        useMaterial3: true,
-        brightness: Brightness.light,
-      ),
-      darkTheme: ThemeData(
-        colorSchemeSeed: seedColor,
-        useMaterial3: true,
-        brightness: Brightness.dark,
-      ),
-      home: Builder(
-        builder: (innerContext) {
-          return Scaffold(
-            appBar: AppBar(
-              title: const Text(
-                'Bygo',
-                style: TextStyle(fontWeight: FontWeight.bold),
+      themeMode: _themeMode,
+      theme: _buildTheme(Brightness.light),
+      darkTheme: _buildTheme(Brightness.dark),
+      home: !_isLoaded
+          ? const Scaffold(
+              body: Center(child: CircularProgressIndicator()),
+            )
+          : Scaffold(
+              appBar: AppBar(
+                title: const Text(
+                  'Bygo',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                centerTitle: false,
               ),
-              actions: [
-                if (_currentIndex != 2)
-                  IconButton(
-                    tooltip: '설정 열기',
-                    icon: const Icon(Icons.settings_outlined),
-                    onPressed: () => _navigateToTab(2),
-                  ),
-              ],
-            ),
-            body: _isLoading
-                ? const Center(child: CircularProgressIndicator())
-                : PageView(
-                    controller: _pageController,
-                    onPageChanged: (index) {
-                      if (_currentIndex != index) {
-                        HapticFeedback.selectionClick();
-                        setState(() => _currentIndex = index);
-                      }
+              body: PageView(
+                controller: _pageController,
+                onPageChanged: (idx) {
+                  setState(() => _currentIndex = idx);
+                },
+                children: [
+                  CalendarScreen(
+                    schedules: _schedules,
+                    situations: _situations,
+                    showTips: _showTips,
+                    onSchedulesChanged: (updated) {
+                      setState(() => _schedules = List.from(updated));
+                      _storage.saveSchedules(_schedules);
                     },
-                    children: [
-                      CalendarScreen(
-                        schedules: _schedules,
-                        situations: _situations,
-                        showTips: _showTips,
-                        onSchedulesChanged: (updated) {
-                          setState(() => _schedules = updated);
-                          StorageService.saveSchedules(updated);
-                        },
-                        onSituationsChanged: (updated) {
-                          setState(() => _situations = updated);
-                          StorageService.saveSituations(updated);
-                        },
-                      ),
-                      SituationScreen(
-                        situations: _situations,
-                        showTips: _showTips,
-                        onSituationsChanged: (updated) {
-                          setState(() => _situations = updated);
-                          StorageService.saveSituations(updated);
-                        },
-                      ),
-                      SettingsScreen(
-                        isDarkMode: _isDarkMode,
-                        onDarkModeChanged: _updateDarkMode,
-                        themeColorValue: _themeColorValue,
-                        onThemeColorChanged: _updateThemeColor,
-                        showTips: _showTips,
-                        onShowTipsChanged: _updateShowTips,
-                        onExportBackup: () => _handleExportBackup(innerContext),
-                        onImportBackup: () => _handleImportBackup(innerContext),
-                      ),
-                    ],
+                    onSituationsChanged: (updated) {
+                      setState(() => _situations = List.from(updated));
+                      _storage.saveSituations(_situations);
+                    },
                   ),
-            bottomNavigationBar: NavigationBar(
-              selectedIndex: _currentIndex,
-              onDestinationSelected: _navigateToTab,
-              destinations: const [
-                NavigationDestination(
-                  icon: Icon(Icons.calendar_month_outlined),
-                  selectedIcon: Icon(Icons.calendar_month),
-                  label: '캘린더',
-                ),
-                NavigationDestination(
-                  icon: Icon(Icons.backpack_outlined),
-                  selectedIcon: Icon(Icons.backpack),
-                  label: '상황·소지품',
-                ),
-                NavigationDestination(
-                  icon: Icon(Icons.settings_outlined),
-                  selectedIcon: Icon(Icons.settings),
-                  label: '설정',
-                ),
-              ],
+                  SituationScreen(
+                    situations: _situations,
+                    schedules: _schedules,
+                    showTips: _showTips,
+                    onSituationsChanged: (updated) {
+                      setState(() => _situations = List.from(updated));
+                      _storage.saveSituations(_situations);
+                    },
+                    onSchedulesChanged: (updated) {
+                      setState(() => _schedules = List.from(updated));
+                      _storage.saveSchedules(_schedules);
+                    },
+                  ),
+                  SettingsScreen(
+                    themeMode: _themeMode,
+                    seedColorValue: _seedColorValue,
+                    showTips: _showTips,
+                    onThemeModeChanged: (mode) {
+                      setState(() => _themeMode = mode);
+                      _storage.saveThemeMode(mode);
+                    },
+                    onSeedColorChanged: (colorVal) {
+                      setState(() => _seedColorValue = colorVal);
+                      _storage.saveSeedColor(colorVal);
+                    },
+                    onShowTipsChanged: (val) {
+                      setState(() => _showTips = val);
+                      _storage.saveShowTips(val);
+                    },
+                  ),
+                ],
+              ),
+              bottomNavigationBar: NavigationBar(
+                selectedIndex: _currentIndex,
+                onDestinationSelected: (idx) {
+                  HapticFeedback.selectionClick();
+                  setState(() => _currentIndex = idx);
+                  _pageController.animateToPage(
+                    idx,
+                    duration: const Duration(milliseconds: 250),
+                    curve: Curves.easeOutCubic,
+                  );
+                },
+                destinations: const [
+                  NavigationDestination(
+                    icon: Icon(Icons.calendar_month_outlined),
+                    selectedIcon: Icon(Icons.calendar_month),
+                    label: '캘린더',
+                  ),
+                  NavigationDestination(
+                    icon: Icon(Icons.checklist_rtl_outlined),
+                    selectedIcon: Icon(Icons.checklist_rtl),
+                    label: '상황·체크리스트',
+                  ),
+                  NavigationDestination(
+                    icon: Icon(Icons.settings_outlined),
+                    selectedIcon: Icon(Icons.settings),
+                    label: '설정',
+                  ),
+                ],
+              ),
             ),
-          );
-        },
-      ),
     );
   }
 }
