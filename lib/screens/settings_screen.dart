@@ -383,6 +383,7 @@ class SettingsScreen extends StatelessWidget {
           ),
           child: Column(
             children: [
+              /*
               SwitchListTile(
                 title: Text(
                   '매일 기준 시각($dailyResetTime)에 전체 상황 체크리스트 초기화',
@@ -427,6 +428,7 @@ class SettingsScreen extends StatelessWidget {
                   onShowHomeWidgetPanelChanged?.call(val);
                 },
               ),
+              */
               const Divider(height: 1),
               SwitchListTile(
                 title: const Text(
