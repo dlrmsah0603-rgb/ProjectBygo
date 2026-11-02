@@ -63,7 +63,13 @@ class _CalendarScreenState extends State<CalendarScreen> {
   CalendarViewStage _viewStage = CalendarViewStage.month;
   DateTime _focusedDay = DateTime.now();
   DateTime? _selectedDay = DateTime.now();
-  String? _selectedFilterTag;
+
+  // 다중 태그 필터 상태:
+  // - _isAllFilterSelected가 true이면 전체 표시
+  // - false이면 _selectedFilterTags에 담긴 태그들(OR 조건)만 표시 (비어 있으면 아무것도 표시하지 않음)
+  bool _isAllFilterSelected = true;
+  final Set<String> _selectedFilterTags = <String>{};
+
   String _searchQuery = '';
   bool _isSearching = false;
   final TextEditingController _searchController = TextEditingController();
@@ -97,6 +103,9 @@ class _CalendarScreenState extends State<CalendarScreen> {
     30, // 30분 전
     60, // 1시간 전
   ];
+
+  bool get _hasNoFilterSelected =>
+      !_isAllFilterSelected && _selectedFilterTags.isEmpty;
 
   @override
   void initState() {
@@ -142,6 +151,43 @@ class _CalendarScreenState extends State<CalendarScreen> {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setStringList(_tagOrderPrefKey, _customTagOrder);
     } catch (_) {}
+  }
+
+  /// [전체] 필터 탭 처리:
+  /// - 다른 태그들이 켜져 있거나 아무것도 선택되지 않은 상태에서 누르면 다른 태그들을 모두 끄고 [전체]를 켬
+  /// - 이미 [전체]가 켜져 있는 상태에서 다시 누르면 [전체]도 꺼서 선택 0개 상태로 전환
+  void _onAllFilterTapped() {
+    HapticFeedback.selectionClick();
+    setState(() {
+      if (_isAllFilterSelected) {
+        _isAllFilterSelected = false;
+        _selectedFilterTags.clear();
+      } else {
+        _isAllFilterSelected = true;
+        _selectedFilterTags.clear();
+      }
+    });
+  }
+
+  /// 개별 태그(또는 '할 일') 칩 탭 처리:
+  /// - [전체]가 켜져 있을 때 누르면 [전체]는 꺼지고 해당 태그만 켜짐
+  /// - [전체]가 꺼져 있을 때 누르면 해당 태그의 선택 상태를 토글 (모두 꺼지면 0개 상태 유지)
+  void _onFilterTagToggled(String tagKey) {
+    HapticFeedback.selectionClick();
+    setState(() {
+      if (_isAllFilterSelected) {
+        _isAllFilterSelected = false;
+        _selectedFilterTags
+          ..clear()
+          ..add(tagKey);
+      } else {
+        if (_selectedFilterTags.contains(tagKey)) {
+          _selectedFilterTags.remove(tagKey);
+        } else {
+          _selectedFilterTags.add(tagKey);
+        }
+      }
+    });
   }
 
   /// 체크리스트가 모두 완료되었을 때 오늘 날짜에 기록용 일정을 자동 등록
@@ -388,14 +434,28 @@ class _CalendarScreenState extends State<CalendarScreen> {
     return null;
   }
 
+  /// 다중 선택된 태그(OR 조건) 기준으로 해당 날짜의 일정 조회
   List<Schedule> _getSchedulesForDay(DateTime day) {
-    if (_selectedFilterTag == _todoFilterTagKey) {
+    // 선택된 필터가 아예 없으면(0개) 아무것도 표시하지 않음
+    if (_hasNoFilterSelected) {
       return [];
     }
+
+    // [전체]가 꺼져 있을 때 선택된 일반 태그들만 추출 ('할 일' 전용 키 제외)
+    final activeScheduleTags = _selectedFilterTags
+        .where((t) => t != _todoFilterTagKey)
+        .map((t) => t.trim())
+        .toSet();
+
+    // [전체]가 아닌데 선택된 일반 태그가 하나도 없다면 (예: '할 일'만 단독 선택된 경우) 일정은 표시하지 않음
+    if (!_isAllFilterSelected && activeScheduleTags.isEmpty) {
+      return [];
+    }
+
     final events = widget.schedules.where((sc) {
       final matchesDay = sc.occursOn(day);
-      final matchesTag = _selectedFilterTag == null ||
-          sc.tag.trim() == _selectedFilterTag!.trim();
+      final matchesTag = _isAllFilterSelected ||
+          activeScheduleTags.contains(sc.tag.trim());
       final matchesSearch = _searchQuery.trim().isEmpty ||
           sc.title.toLowerCase().contains(_searchQuery.trim().toLowerCase()) ||
           sc.tag.toLowerCase().contains(_searchQuery.trim().toLowerCase());
@@ -406,11 +466,17 @@ class _CalendarScreenState extends State<CalendarScreen> {
     return events;
   }
 
-  /// 마감 기한 기준으로 해당 날짜의 할 일 조회 ('전체' 또는 '할 일' 필터일 때 표시)
+  /// 마감 기한 기준으로 해당 날짜의 할 일 조회 ('전체'가 켜져 있거나 '할 일' 필터가 선택된 경우 표시)
   List<TodoItem> _getTodosForDay(DateTime day) {
-    if (_selectedFilterTag != null && _selectedFilterTag != _todoFilterTagKey) {
+    if (_hasNoFilterSelected) {
       return [];
     }
+    final showTodos = _isAllFilterSelected ||
+        _selectedFilterTags.contains(_todoFilterTagKey);
+    if (!showTodos) {
+      return [];
+    }
+
     final todos = widget.todos.where((t) {
       if (t.dueDate == null) return false;
       final matchesDay = isSameDay(t.dueDate, day);
@@ -1581,31 +1647,24 @@ class _CalendarScreenState extends State<CalendarScreen> {
             : null,
         label: Text('#$tag'),
         selected: isSelected,
-        onSelected: (selected) {
-          HapticFeedback.selectionClick();
-          setState(() {
-            _selectedFilterTag = selected ? tag : null;
-          });
-        },
+        onSelected: (_) => _onFilterTagToggled(tag),
       ),
     );
   }
 
   Widget _buildReorderableTagBar(List<String> tags) {
-    final isTodoSelected = _selectedFilterTag == _todoFilterTagKey;
+    final isTodoSelected = !_isAllFilterSelected &&
+        _selectedFilterTags.contains(_todoFilterTagKey);
 
     return Row(
       children: [
         FilterChip(
           label: const Text('전체'),
-          selected: _selectedFilterTag == null,
-          onSelected: (_) {
-            HapticFeedback.selectionClick();
-            setState(() => _selectedFilterTag = null);
-          },
+          selected: _isAllFilterSelected,
+          onSelected: (_) => _onAllFilterTapped(),
         ),
         const SizedBox(width: 8),
-        // 기본 '할 일' 태그 필터 버튼
+        // 기본 '할 일' 태그 필터 버튼 (다중 선택 가능)
         FilterChip(
           avatar: Icon(
             Icons.task_alt,
@@ -1616,17 +1675,13 @@ class _CalendarScreenState extends State<CalendarScreen> {
           ),
           label: const Text('할 일'),
           selected: isTodoSelected,
-          onSelected: (selected) {
-            HapticFeedback.selectionClick();
-            setState(() {
-              _selectedFilterTag = selected ? _todoFilterTagKey : null;
-            });
-          },
+          onSelected: (_) => _onFilterTagToggled(_todoFilterTagKey),
         ),
         const SizedBox(width: 8),
         ...tags.map((tag) {
           final sit = _findSituationByTag(tag);
-          final isSelected = _selectedFilterTag == tag;
+          final isSelected =
+              !_isAllFilterSelected && _selectedFilterTags.contains(tag);
 
           return Padding(
             key: ValueKey('tag_chip_$tag'),
@@ -1841,6 +1896,9 @@ class _CalendarScreenState extends State<CalendarScreen> {
   }) {
     final primaryColor = Theme.of(context).colorScheme.primary;
     final onPrimaryColor = Theme.of(context).colorScheme.onPrimary;
+    final isOnlyTodoFilter = !_isAllFilterSelected &&
+        _selectedFilterTags.length == 1 &&
+        _selectedFilterTags.contains(_todoFilterTagKey);
 
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
@@ -1898,7 +1956,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                 ),
                 const SizedBox(width: 6),
                 Text(
-                  _selectedFilterTag == _todoFilterTagKey
+                  isOnlyTodoFilter
                       ? '${activeDay.month}월 ${activeDay.day}일 할 일 ($eventCount)'
                       : '${activeDay.month}월 ${activeDay.day}일 일정·할 일 ($eventCount)',
                   style: const TextStyle(
@@ -2078,8 +2136,22 @@ class _CalendarScreenState extends State<CalendarScreen> {
     Map<CalendarViewStage, double> stageHeights,
   ) {
     final totalCount = selectedEvents.length + selectedTodos.length;
+    final isOnlyTodoFilter = !_isAllFilterSelected &&
+        _selectedFilterTags.length == 1 &&
+        _selectedFilterTags.contains(_todoFilterTagKey);
 
     if (totalCount == 0) {
+      String emptyMessage;
+      if (_hasNoFilterSelected) {
+        emptyMessage =
+            '선택된 태그 필터가 없습니다.\n상단 태그를 선택하거나 [전체]를 켜주세요.';
+      } else if (isOnlyTodoFilter) {
+        emptyMessage = '선택한 날짜에 마감인 할 일이 없습니다.';
+      } else {
+        emptyMessage =
+            '선택한 날짜에 일정이 없습니다.\n(바를 잡고 움직여 2주 / 한달 / 확장 조절)';
+      }
+
       return GestureDetector(
         behavior: HitTestBehavior.opaque,
         onVerticalDragStart: (d) => _onBarDragStart(d, stageHeights),
@@ -2092,15 +2164,26 @@ class _CalendarScreenState extends State<CalendarScreen> {
             return Center(
               child: SingleChildScrollView(
                 physics: const NeverScrollableScrollPhysics(),
-                child: Text(
-                  _selectedFilterTag == _todoFilterTagKey
-                      ? '선택한 날짜에 마감인 할 일이 없습니다.'
-                      : '선택한 날짜에 일정이 없습니다.\n(바를 잡고 움직여 2주 / 한달 / 확장 조절)',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: Colors.grey.shade600,
-                    fontSize: 13,
-                  ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (_hasNoFilterSelected) ...[
+                      Icon(
+                        Icons.filter_alt_off_outlined,
+                        size: 28,
+                        color: Colors.grey.shade500,
+                      ),
+                      const SizedBox(height: 8),
+                    ],
+                    Text(
+                      emptyMessage,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Colors.grey.shade600,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ],
                 ),
               ),
             );
@@ -2456,7 +2539,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                   const SizedBox(width: 4),
                   Expanded(
                     child: Text(
-                      '팁: 상단 [할 일] 필터로 마감일 기준 할 일을 모아보고, #태그를 꾹 눌러 순서를 변경하세요.',
+                      '팁: 상단 태그와 [할 일]을 여러 개 중복 선택해 모아볼 수 있으며, #태그를 꾹 눌러 순서를 변경하세요.',
                       style: TextStyle(
                         fontSize: 11,
                         color: Colors.grey.shade600,
