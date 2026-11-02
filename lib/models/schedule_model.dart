@@ -55,7 +55,9 @@ class Schedule {
   DateTime date; // 단일 일정 날짜 또는 반복 일정의 시작일
   String title;
   String time; // 'HH:mm'
-  String tag;
+
+  List<String> tags; // 다중 태그 목록 (캘린더 필터링용)
+  String? situationName; // 연결된 외출 상황 이름 (단일 체크리스트 매핑용, 미선택 시 null)
 
   ScheduleRepeatType repeatType;
   int repeatInterval; // n (기본값 1)
@@ -72,7 +74,9 @@ class Schedule {
     required this.date,
     required this.title,
     required this.time,
-    this.tag = '',
+    List<String>? tags,
+    String tag = '', // 단일 문자열 입력 하위 호환용
+    this.situationName,
     ScheduleRepeatType? repeatType,
     int repeatInterval = 1,
     List<int>? repeatWeekdays,
@@ -81,7 +85,16 @@ class Schedule {
     List<String>? excludedDates,
     this.prepMinutesBefore,
     this.isAutoRecord = false,
-  })  : repeatInterval = repeatInterval < 1 ? 1 : repeatInterval,
+  })  : tags = tags != null
+            ? tags
+                .map((e) => e.trim().replaceAll('#', ''))
+                .where((e) => e.isNotEmpty)
+                .toSet()
+                .toList()
+            : (tag.trim().replaceAll('#', '').isNotEmpty
+                ? [tag.trim().replaceAll('#', '')]
+                : <String>[]),
+        repeatInterval = repeatInterval < 1 ? 1 : repeatInterval,
         repeatWeekdays =
             repeatWeekdays != null ? List<int>.from(repeatWeekdays) : [],
         excludedDates =
@@ -90,6 +103,20 @@ class Schedule {
             ((repeatWeekdays != null && repeatWeekdays.isNotEmpty)
                 ? ScheduleRepeatType.weekly
                 : ScheduleRepeatType.none);
+
+  /// 하위 호환용 대표 태그 getter/setter
+  String get tag => tags.isNotEmpty ? tags.first : '';
+  set tag(String value) {
+    final clean = value.trim().replaceAll('#', '');
+    if (clean.isEmpty) {
+      tags = [];
+    } else {
+      tags = [clean];
+    }
+  }
+
+  bool get hasSituation =>
+      situationName != null && situationName!.trim().isNotEmpty;
 
   bool get isRepeating => repeatType != ScheduleRepeatType.none;
 
@@ -173,8 +200,7 @@ class Schedule {
         base = n == 1 ? '매주 $dayStr' : '$n주마다 ($dayStr)';
         break;
       case ScheduleRepeatType.monthly:
-        base =
-            n == 1 ? '매달 ${date.day}일' : '$n개월마다 (${date.day}일)';
+        base = n == 1 ? '매달 ${date.day}일' : '$n개월마다 (${date.day}일)';
         break;
       case ScheduleRepeatType.yearly:
         base = n == 1
@@ -191,7 +217,7 @@ class Schedule {
     return base;
   }
 
-  /// 반복 주기 패턴(시작일 이후, 종료일/횟수/예외일 제외)에 부합하는지 확인
+  /// 반복 주기 패턴에 부합하는지 확인
   bool _matchesPattern(DateTime start, DateTime target) {
     final n = repeatInterval < 1 ? 1 : repeatInterval;
 
@@ -210,7 +236,6 @@ class Schedule {
             repeatWeekdays.isEmpty ? [start.weekday] : repeatWeekdays;
         if (!weekdays.contains(target.weekday)) return false;
 
-        // 시작일이 속한 주의 월요일과 대상 날짜가 속한 주의 월요일 기준 주(Week) 차이 계산
         final startMonday =
             start.subtract(Duration(days: start.weekday - 1));
         final targetMonday =
@@ -222,7 +247,6 @@ class Schedule {
         final diffMonths =
             (target.year - start.year) * 12 + (target.month - start.month);
         if (diffMonths < 0 || diffMonths % n != 0) return false;
-        // A안: 31일 등 해당 월에 없는 날짜는 그 달의 말일로 보정
         final maxDay = _daysInMonth(target.year, target.month);
         final expectedDay = start.day > maxDay ? maxDay : start.day;
         return target.day == expectedDay;
@@ -263,7 +287,6 @@ class Schedule {
             targetMonday.difference(startMonday).inDays ~/ 7;
 
         int count = 0;
-        // 1) 시작 주(week 0): start 당일 이후 요일만 카운트
         if (totalSelectedWeeks == 0) {
           for (final w in weekdays) {
             if (w >= start.weekday && w <= target.weekday) {
@@ -279,13 +302,11 @@ class Schedule {
           }
         }
 
-        // 2) 중간 활성 주(n주 간격)들 일괄 계산
         final intermediateActiveWeeks = (totalSelectedWeeks - 1) ~/ n;
         if (intermediateActiveWeeks > 0) {
           count += intermediateActiveWeeks * weekdays.length;
         }
 
-        // 3) 대상 날짜가 속한 주(target week)
         if (totalSelectedWeeks % n == 0) {
           for (final w in weekdays) {
             if (w <= target.weekday) {
@@ -310,24 +331,20 @@ class Schedule {
     final target = DateTime.utc(day.year, day.month, day.day);
     final start = DateTime.utc(date.year, date.month, date.day);
 
-    // 1. 특정일 삭제/변경으로 예외 등록된 날짜면 표시하지 않음
     if (excludedDates.contains(dateKey(target))) {
       return false;
     }
 
-    // 2. 단일 일정인 경우
     if (!isRepeating) {
       return target.year == start.year &&
           target.month == start.month &&
           target.day == start.day;
     }
 
-    // 3. 반복 일정: 시작일 이전이면 표시하지 않음
     if (target.isBefore(start)) {
       return false;
     }
 
-    // 4. 반복 종료일이 설정되어 있고, 종료일 이후라면 표시하지 않음
     if (repeatEndDate != null) {
       final end = DateTime.utc(
         repeatEndDate!.year,
@@ -339,12 +356,10 @@ class Schedule {
       }
     }
 
-    // 5. 주기 패턴 일치 확인
     if (!_matchesPattern(start, target)) {
       return false;
     }
 
-    // 6. 반복 횟수(repeatCount) 제한 확인
     if (repeatCount != null && repeatCount! > 0) {
       final occurrences = _countOccurrencesUpTo(start, target);
       if (occurrences > repeatCount!) {
@@ -360,7 +375,9 @@ class Schedule {
     DateTime? date,
     String? title,
     String? time,
-    String? tag,
+    List<String>? tags,
+    String? situationName,
+    bool clearSituationName = false,
     ScheduleRepeatType? repeatType,
     int? repeatInterval,
     List<int>? repeatWeekdays,
@@ -378,7 +395,9 @@ class Schedule {
       date: date ?? this.date,
       title: title ?? this.title,
       time: time ?? this.time,
-      tag: tag ?? this.tag,
+      tags: tags != null ? List<String>.from(tags) : List<String>.from(this.tags),
+      situationName:
+          clearSituationName ? null : (situationName ?? this.situationName),
       repeatType: repeatType ?? this.repeatType,
       repeatInterval: repeatInterval ?? this.repeatInterval,
       repeatWeekdays: repeatWeekdays != null
@@ -403,7 +422,9 @@ class Schedule {
       'date': date.toIso8601String(),
       'title': title,
       'time': time,
-      'tag': tag,
+      'tags': tags,
+      'tag': tag, // 하위 호환 유지
+      'situationName': situationName,
       'repeatType': repeatType.name,
       'repeatInterval': repeatInterval,
       'repeatWeekdays': repeatWeekdays,
@@ -431,9 +452,25 @@ class Schedule {
             : ScheduleRepeatType.none,
       );
     } else if (parsedWeekdays.isNotEmpty) {
-      // 기존 데이터 하위 호환: repeatWeekdays가 있으면 주간 반복으로 자동 인식
       parsedRepeatType = ScheduleRepeatType.weekly;
     }
+
+    final List<String> parsedTags = [];
+    if (json['tags'] is List) {
+      for (final item in (json['tags'] as List)) {
+        final clean = item.toString().trim().replaceAll('#', '');
+        if (clean.isNotEmpty && !parsedTags.contains(clean)) {
+          parsedTags.add(clean);
+        }
+      }
+    } else if (json['tag'] is String) {
+      final clean = (json['tag'] as String).trim().replaceAll('#', '');
+      if (clean.isNotEmpty) {
+        parsedTags.add(clean);
+      }
+    }
+
+    final rawSitName = (json['situationName'] as String?)?.trim();
 
     return Schedule(
       id: (json['id'] as String?) ??
@@ -443,7 +480,9 @@ class Schedule {
           : DateTime.now(),
       title: (json['title'] as String?) ?? '',
       time: (json['time'] as String?) ?? '09:00',
-      tag: (json['tag'] as String?) ?? '',
+      tags: parsedTags,
+      situationName:
+          (rawSitName != null && rawSitName.isNotEmpty) ? rawSitName : null,
       repeatType: parsedRepeatType,
       repeatInterval: ((json['repeatInterval'] as num?)?.toInt() ?? 1).clamp(
         1,

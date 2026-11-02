@@ -15,7 +15,7 @@ void main() {
   runApp(const BygoApp());
 }
 
-/// 준비시간 ~ 일정 시간 내에 동일한 태그를 공유하는 상황 및 일정 묶음
+/// 준비시간 ~ 일정 시간 내에 동일한 상황(situationName)을 공유하는 상황 및 일정 묶음
 class ActivePrepGroup {
   final Situation situation;
   final List<Schedule> schedules;
@@ -159,31 +159,32 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
     return '$y-$m-${d}_$hh:$mm';
   }
 
-  Situation? _findSituationByTag(String tag) {
-    final clean = tag.trim();
+  /// 상황 이름(situationName)으로 Situation 조회
+  Situation? _findSituationByName(String? situationName) {
+    final clean = situationName?.trim() ?? '';
     if (clean.isEmpty) return null;
     for (final s in _situations) {
-      if (s.tag.trim() == clean) return s;
+      if (s.name.trim() == clean) return s;
     }
     return null;
   }
 
   List<ActivePrepGroup> _getActivePrepGroups(DateTime now) {
-    final Map<String, List<Schedule>> schedulesByTag = {};
+    final Map<String, List<Schedule>> schedulesBySitName = {};
 
     for (final sc in _schedules) {
       if (sc.isAutoRecord) continue;
-      final cleanTag = sc.tag.trim();
-      if (cleanTag.isEmpty) continue;
+      final cleanSitName = sc.situationName?.trim() ?? '';
+      if (cleanSitName.isEmpty) continue;
       if (sc.isInPrepWindowAt(now)) {
-        schedulesByTag.putIfAbsent(cleanTag, () => []).add(sc);
+        schedulesBySitName.putIfAbsent(cleanSitName, () => []).add(sc);
       }
     }
 
     final List<ActivePrepGroup> groups = [];
     for (final sit in _situations) {
-      final cleanTag = sit.tag.trim();
-      final matchedSchedules = schedulesByTag[cleanTag];
+      final cleanName = sit.name.trim();
+      final matchedSchedules = schedulesBySitName[cleanName];
       if (matchedSchedules != null && matchedSchedules.isNotEmpty) {
         matchedSchedules.sort((a, b) => a.time.compareTo(b.time));
         groups.add(
@@ -256,7 +257,7 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
       _storage.saveTodos(_todos);
     }
 
-    // 3. 일정 시간 정각 도달 시 연결된 상황 체크리스트 자동 초기화
+    // 3. 일정 시간 정각 도달 시 연결된 상황(situationName) 체크리스트 자동 초기화
     if (_autoResetOnScheduleTime) {
       for (final sc in _schedules) {
         if (sc.isAutoRecord) continue;
@@ -269,7 +270,7 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
           _resetExecutedKeys.add(resetKey);
           resetKeysModified = true;
 
-          final sit = _findSituationByTag(sc.tag);
+          final sit = _findSituationByName(sc.situationName);
           if (sit != null && sit.items.isNotEmpty) {
             for (final item in sit.items) {
               item.isChecked = false;
@@ -305,7 +306,7 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
       setState(() {});
     }
 
-    // 4. 준비시간 ~ 일정시간 활성 그룹 및 자동 포커싱 평가
+    // 4. 준비시간 ~ 일정시간 활성 그룹 및 자동 포커싱 평가 (situationName 기준)
     final activeGroups = _getActivePrepGroups(now);
 
     for (final group in activeGroups) {
@@ -313,11 +314,14 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
       final isIncomplete = sit.items.isNotEmpty && !sit.isAllChecked;
 
       for (final sc in group.schedules) {
+        /*
+        // 휴대폰 네이티브 푸시 알림 연동 전까지 앱 내 상단 배너 호출은 비활성화(주석 유지)
         final notifyKey = '${sc.id}_${todayKey}_${sc.prepMinutesBefore}';
         if (!Schedule.notifiedKeys.contains(notifyKey)) {
           Schedule.notifiedKeys.add(notifyKey);
           _showPrepPushBanner(sc, sit);
         }
+        */
 
         final focusWindowKey =
             'focus_${sit.id}_${sc.id}_${todayKey}_${sc.time}';
@@ -356,77 +360,6 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
     _syncHomeWidget(activeGroups);
   }
 
-  void _showPrepPushBanner(Schedule schedule, Situation situation) {
-    HapticFeedback.heavyImpact();
-    SystemSound.play(SystemSoundType.alert);
-
-    final messenger = _messengerKey.currentState;
-    if (messenger == null) return;
-
-    final prepLabel = schedule.prepSummaryText ?? '준비시간';
-    final statusText = situation.isAllChecked
-        ? '체크리스트 완료됨 🎉'
-        : '체크리스트 진행 현황: ${situation.checkedCount}/${situation.items.length}';
-
-    messenger.clearMaterialBanners();
-    messenger.showMaterialBanner(
-      MaterialBanner(
-        elevation: 4,
-        backgroundColor: Colors.orange.shade50,
-        leading: const CircleAvatar(
-          backgroundColor: Colors.deepOrange,
-          child: Icon(
-            Icons.notifications_active,
-            color: Colors.white,
-          ),
-        ),
-        content: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              '⏰ [$prepLabel] ${schedule.title} (${schedule.time})',
-              style: const TextStyle(
-                fontWeight: FontWeight.bold,
-                fontSize: 14,
-                color: Colors.black87,
-              ),
-            ),
-            const SizedBox(height: 2),
-            Text(
-              "'${situation.name}' 체크리스트가 자동 포커싱되었습니다! ($statusText)",
-              style: const TextStyle(
-                fontSize: 12,
-                color: Colors.black87,
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          FilledButton.tonal(
-            onPressed: () {
-              messenger.hideCurrentMaterialBanner();
-              setState(() {
-                _selectedSituationId = situation.id;
-                _currentIndex = 2;
-              });
-              _pageController.animateToPage(
-                2,
-                duration: const Duration(milliseconds: 250),
-                curve: Curves.easeOutCubic,
-              );
-            },
-            child: const Text('체크리스트 보기'),
-          ),
-          TextButton(
-            onPressed: () => messenger.hideCurrentMaterialBanner(),
-            child: const Text('닫기'),
-          ),
-        ],
-      ),
-    );
-  }
-
   void _syncHomeWidget(List<ActivePrepGroup> activeGroups) {
     if (activeGroups.isEmpty) {
       _storage.syncHomeWidgetData(
@@ -447,7 +380,6 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
       return {
         'situationId': g.situation.id,
         'situationName': g.situation.name,
-        'tag': g.situation.tag,
         'schedules': g.schedules
             .map(
               (s) => {
@@ -474,252 +406,6 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
       hasActivePrepSchedule: true,
       summaryText: summaryParts.join(' | '),
       activeGroupsJson: groupsJson,
-    );
-  }
-
-  void _registerCompletedChecklistFromWidget(Situation situation) {
-    final now = DateTime.now();
-    final today = _dateOnly(now);
-    final hh = now.hour.toString().padLeft(2, '0');
-    final mm = now.minute.toString().padLeft(2, '0');
-    final currentTimeStr = '$hh:$mm';
-    final recordTitle = '${situation.name} 체크리스트 완료';
-
-    Schedule? existingRecord;
-    for (final sc in _schedules) {
-      if (sc.isAutoRecord &&
-          sc.tag.trim() == situation.tag.trim() &&
-          sc.date.year == today.year &&
-          sc.date.month == today.month &&
-          sc.date.day == today.day) {
-        existingRecord = sc;
-        break;
-      }
-    }
-
-    setState(() {
-      if (existingRecord != null) {
-        existingRecord.time = currentTimeStr;
-        existingRecord.title = recordTitle;
-      } else {
-        _schedules.add(
-          Schedule(
-            id: 'record_${now.microsecondsSinceEpoch}',
-            date: today,
-            title: recordTitle,
-            time: currentTimeStr,
-            tag: situation.tag,
-            isAutoRecord: true,
-          ),
-        );
-      }
-    });
-    _storage.saveSchedules(_schedules);
-
-    _messengerKey.currentState?.clearSnackBars();
-    _messengerKey.currentState?.showSnackBar(
-      SnackBar(
-        content: Text(
-          "🎉 '${situation.name}' 체크리스트 완료! 캘린더에 기록이 자동 추가되었습니다.",
-        ),
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
-  }
-
-  Widget _buildHomeScreenWidgetCard(List<ActivePrepGroup> activeGroups) {
-    final scheme = Theme.of(context).colorScheme;
-
-    return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.fromLTRB(12, 6, 12, 6),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: scheme.surfaceContainerHighest.withValues(alpha: 0.65),
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(
-          color: activeGroups.isNotEmpty
-              ? scheme.primary.withValues(alpha: 0.5)
-              : Colors.grey.withValues(alpha: 0.3),
-          width: 1.5,
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.06),
-            blurRadius: 8,
-            offset: const Offset(0, 3),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
-            children: [
-              Icon(
-                Icons.widgets_rounded,
-                size: 16,
-                color: scheme.primary,
-              ),
-              const SizedBox(width: 6),
-              Text(
-                'Bygo 홈 화면 위젯',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                  color: scheme.primary,
-                ),
-              ),
-              const Spacer(),
-              if (activeGroups.isNotEmpty)
-                const Text(
-                  '준비시간 ~ 일정시간 활성',
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.deepOrange,
-                  ),
-                ),
-              const SizedBox(width: 6),
-              InkWell(
-                borderRadius: BorderRadius.circular(12),
-                onTap: () {
-                  HapticFeedback.selectionClick();
-                  setState(() => _showHomeWidgetPanel = false);
-                },
-                child: const Padding(
-                  padding: EdgeInsets.all(2),
-                  child: Icon(Icons.close, size: 16),
-                ),
-              ),
-            ],
-          ),
-          const Divider(height: 14),
-          if (activeGroups.isEmpty)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 14),
-              child: Center(
-                child: Text(
-                  '예정된 일정이 없습니다.',
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.grey,
-                  ),
-                ),
-              ),
-            )
-          else
-            ConstrainedBox(
-              constraints: const BoxConstraints(maxHeight: 210),
-              child: SingleChildScrollView(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: activeGroups.map((group) {
-                    final sit = group.situation;
-                    final schedulesText = group.schedules
-                        .map(
-                          (s) =>
-                              '${s.title} (${s.prepTimeString ?? ""}~${s.time})',
-                        )
-                        .join(', ');
-                    final isComplete = sit.isAllChecked;
-                    final accentColor = isComplete ? Colors.green : sit.color;
-
-                    return Padding(
-                      padding: const EdgeInsets.only(bottom: 8),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              Icon(
-                                isComplete ? Icons.verified : sit.iconData,
-                                size: 16,
-                                color: accentColor,
-                              ),
-                              const SizedBox(width: 6),
-                              Expanded(
-                                child: Text(
-                                  '${sit.name} (#${sit.tag}) · $schedulesText',
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ),
-                              Text(
-                                '${sit.checkedCount}/${sit.items.length}',
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.bold,
-                                  color: accentColor,
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 6),
-                          if (sit.items.isEmpty)
-                            const Text(
-                              '등록된 체크리스트 항목이 없습니다.',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: Colors.grey,
-                              ),
-                            )
-                          else
-                            Wrap(
-                              spacing: 6,
-                              runSpacing: 6,
-                              children: sit.items.map((item) {
-                                return FilterChip(
-                                  visualDensity: VisualDensity.compact,
-                                  selected: item.isChecked,
-                                  selectedColor:
-                                      accentColor.withValues(alpha: 0.2),
-                                  checkmarkColor: accentColor,
-                                  label: Text(
-                                    item.name,
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      decoration: item.isChecked
-                                          ? TextDecoration.lineThrough
-                                          : null,
-                                    ),
-                                  ),
-                                  onSelected: (val) {
-                                    final wasAllChecked = sit.isAllChecked;
-                                    setState(() {
-                                      item.isChecked = val;
-                                    });
-                                    if (sit.isAllChecked) {
-                                      HapticFeedback.heavyImpact();
-                                    } else {
-                                      HapticFeedback.lightImpact();
-                                    }
-                                    _storage.saveSituations(_situations);
-                                    if (!wasAllChecked && sit.isAllChecked) {
-                                      _registerCompletedChecklistFromWidget(
-                                        sit,
-                                      );
-                                    }
-                                    _evaluateScheduleLifecycle();
-                                  },
-                                );
-                              }).toList(),
-                            ),
-                        ],
-                      ),
-                    );
-                  }).toList(),
-                ),
-              ),
-            ),
-        ],
-      ),
     );
   }
 
@@ -775,10 +461,6 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    final activeGroups = _isLoaded
-        ? _getActivePrepGroups(DateTime.now())
-        : const <ActivePrepGroup>[];
-
     return MaterialApp(
       title: 'Bygo',
       scaffoldMessengerKey: _messengerKey,
@@ -800,8 +482,6 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
               ),
               body: Column(
                 children: [
-                  if (_showHomeWidgetPanel)
-                    _buildHomeScreenWidgetCard(activeGroups),
                   Expanded(
                     child: PageView(
                       controller: _pageController,

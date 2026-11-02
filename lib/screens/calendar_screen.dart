@@ -38,6 +38,7 @@ class CalendarScreen extends StatefulWidget {
 
 class _CalendarScreenState extends State<CalendarScreen> {
   static const String _tagOrderPrefsKey = 'bygo_calendar_tag_order';
+  static const String _knownTagsPrefsKey = 'bygo_known_tags_pool';
   static const String _todoFilterKey = '__TODO_FILTER__';
 
   static const List<String> _weekdayLabels = [
@@ -66,6 +67,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
   bool _isAllFilterSelected = true;
   final Set<String> _selectedFilterTags = <String>{};
   List<String> _savedTagOrder = [];
+  Set<String> _knownTagsPool = <String>{};
 
   // 검색 상태
   bool _isSearching = false;
@@ -79,7 +81,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
   @override
   void initState() {
     super.initState();
-    _loadSavedTagOrder();
+    _loadSavedTagMetadata();
   }
 
   @override
@@ -88,13 +90,15 @@ class _CalendarScreenState extends State<CalendarScreen> {
     super.dispose();
   }
 
-  Future<void> _loadSavedTagOrder() async {
+  Future<void> _loadSavedTagMetadata() async {
     try {
       final prefs = await SharedPreferences.getInstance();
       final order = prefs.getStringList(_tagOrderPrefsKey);
-      if (order != null && mounted) {
+      final pool = prefs.getStringList(_knownTagsPrefsKey);
+      if (mounted) {
         setState(() {
-          _savedTagOrder = order;
+          if (order != null) _savedTagOrder = order;
+          if (pool != null) _knownTagsPool = pool.toSet();
         });
       }
     } catch (_) {}
@@ -107,15 +111,32 @@ class _CalendarScreenState extends State<CalendarScreen> {
     } catch (_) {}
   }
 
-  List<String> get _orderedTags {
-    final currentTags = <String>{};
-    for (final s in widget.situations) {
-      final t = s.tag.trim();
-      if (t.isNotEmpty) currentTags.add(t);
+  Future<void> _addTagsToKnownPool(Iterable<String> newTags) async {
+    bool modified = false;
+    for (final t in newTags) {
+      final clean = t.trim().replaceAll('#', '');
+      if (clean.isNotEmpty && !_knownTagsPool.contains(clean)) {
+        _knownTagsPool.add(clean);
+        modified = true;
+      }
     }
+    if (modified) {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setStringList(_knownTagsPrefsKey, _knownTagsPool.toList());
+      } catch (_) {}
+    }
+  }
+
+  /// 캘린더 상단 필터 바 및 일정 추가 창에서 사용할 전체 태그 목록
+  /// (오직 일정들에 등록된 태그 및 사용자가 추가한 태그만 수집, 상황 이름은 섞지 않음)
+  List<String> get _orderedTags {
+    final currentTags = <String>{..._knownTagsPool};
     for (final sc in widget.schedules) {
-      final t = sc.tag.trim();
-      if (t.isNotEmpty) currentTags.add(t);
+      for (final rawTag in sc.tags) {
+        final t = rawTag.trim();
+        if (t.isNotEmpty) currentTags.add(t);
+      }
     }
 
     final result = <String>[];
@@ -135,11 +156,12 @@ class _CalendarScreenState extends State<CalendarScreen> {
   bool get _shouldShowTodos =>
       _isAllFilterSelected || _selectedFilterTags.contains(_todoFilterKey);
 
-  Situation? _findSituationByTag(String tag) {
-    final clean = tag.trim();
+  /// 상황 이름(situationName)으로 Situation 객체 조회
+  Situation? _findSituationByName(String? situationName) {
+    final clean = situationName?.trim() ?? '';
     if (clean.isEmpty) return null;
     for (final s in widget.situations) {
-      if (s.tag.trim() == clean || s.name.trim() == clean) return s;
+      if (s.name.trim() == clean) return s;
     }
     return null;
   }
@@ -147,9 +169,8 @@ class _CalendarScreenState extends State<CalendarScreen> {
   bool _scheduleMatchesFilter(Schedule schedule) {
     if (_hasNoFilterSelected) return false;
     if (_isAllFilterSelected) return true;
-    final cleanTag = schedule.tag.trim();
-    if (cleanTag.isEmpty) return false;
-    return _selectedFilterTags.contains(cleanTag);
+    if (schedule.tags.isEmpty) return false;
+    return schedule.tags.any((t) => _selectedFilterTags.contains(t.trim()));
   }
 
   List<Schedule> _getSchedulesForDay(DateTime day) {
@@ -190,9 +211,13 @@ class _CalendarScreenState extends State<CalendarScreen> {
     final q = _searchQuery.trim().toLowerCase();
     if (q.isEmpty) return [];
     return widget.schedules.where((sc) {
-      return sc.title.toLowerCase().contains(q) ||
-          sc.tag.toLowerCase().contains(q) ||
-          sc.time.toLowerCase().contains(q);
+      final matchesTitle = sc.title.toLowerCase().contains(q);
+      final matchesTime = sc.time.toLowerCase().contains(q);
+      final matchesTags =
+          sc.tags.any((t) => t.toLowerCase().contains(q));
+      final matchesSituation =
+          (sc.situationName?.toLowerCase().contains(q) ?? false);
+      return matchesTitle || matchesTime || matchesTags || matchesSituation;
     }).toList()
       ..sort((a, b) => a.date.compareTo(b.date));
   }
@@ -256,7 +281,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
     Schedule? existingRecord;
     for (final sc in widget.schedules) {
       if (sc.isAutoRecord &&
-          sc.tag.trim() == situation.tag.trim() &&
+          sc.situationName?.trim() == situation.name.trim() &&
           sc.date.year == today.year &&
           sc.date.month == today.month &&
           sc.date.day == today.day) {
@@ -279,7 +304,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
           date: today,
           title: recordTitle,
           time: currentTimeStr,
-          tag: situation.tag,
+          situationName: situation.name,
           isAutoRecord: true,
         );
         widget.schedules.add(addedOrUpdated!);
@@ -450,7 +475,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
     );
   }
 
-  // --- 일정 추가 / 수정 다이얼로그 (반복 안 함 / n일 / n주 / n개월 / n년마다 지원) ---
+  // --- 일정 추가 / 수정 다이얼로그 (다중 태그 칩 선택 + 단일 상황 선택 + 반복 설정) ---
   void _showScheduleDialog({DateTime? targetDate, Schedule? existing}) {
     final initialDay = targetDate ?? existing?.date ?? _selectedDay;
     DateTime selectedStartDate = DateTime(
@@ -461,10 +486,27 @@ class _CalendarScreenState extends State<CalendarScreen> {
 
     final titleController =
         TextEditingController(text: existing?.title ?? '');
-    final tagController = TextEditingController(text: existing?.tag ?? '');
     String selectedTime = existing?.time ?? '09:00';
     int? selectedPrepMinutes = existing?.prepMinutesBefore;
 
+    // 1) 다중 태그 선택 상태
+    final List<String> availableTags = List<String>.from(_orderedTags);
+    final Set<String> selectedTags = existing != null
+        ? existing.tags.map((e) => e.trim()).where((e) => e.isNotEmpty).toSet()
+        : <String>{};
+    for (final t in selectedTags) {
+      if (!availableTags.contains(t)) {
+        availableTags.add(t);
+      }
+    }
+
+    // 2) 단일 상황(체크리스트) 선택 상태 (상황 이름으로 매핑, 미선택 시 null)
+    String? selectedSituationName = existing?.situationName?.trim();
+    if (selectedSituationName != null && selectedSituationName.isEmpty) {
+      selectedSituationName = null;
+    }
+
+    // 3) 반복 설정 상태
     ScheduleRepeatType selectedRepeatType =
         existing?.repeatType ?? ScheduleRepeatType.none;
     final intervalController = TextEditingController(
@@ -489,12 +531,65 @@ class _CalendarScreenState extends State<CalendarScreen> {
       text: (existing?.repeatCount ?? 10).toString(),
     );
 
+    Future<void> promptDirectTagInput(
+      StateSetter setDialogState,
+    ) async {
+      final newTagController = TextEditingController();
+      final addedTag = await showDialog<String>(
+        context: context,
+        builder: (tagCtx) => AlertDialog(
+          title: const Text('새 태그 직접 입력'),
+          content: TextField(
+            controller: newTagController,
+            autofocus: true,
+            decoration: const InputDecoration(
+              labelText: '태그 이름 (예: 운동, 출근, 병원)',
+              prefixText: '#',
+              border: OutlineInputBorder(),
+            ),
+            onSubmitted: (val) => Navigator.pop(tagCtx, val),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(tagCtx),
+              child: const Text('취소'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(tagCtx, newTagController.text),
+              child: const Text('추가'),
+            ),
+          ],
+        ),
+      );
+
+      final clean = (addedTag ?? '').trim().replaceAll('#', '');
+      if (clean.isEmpty) return;
+
+      HapticFeedback.selectionClick();
+      setDialogState(() {
+        if (!availableTags.contains(clean)) {
+          availableTags.add(clean);
+        }
+        selectedTags.add(clean);
+      });
+      await _addTagsToKnownPool([clean]);
+    }
+
     showDialog(
       context: context,
       builder: (ctx) {
         return StatefulBuilder(
           builder: (ctx, setDialogState) {
             final isRepeating = selectedRepeatType != ScheduleRepeatType.none;
+
+            // 현재 등록된 상황 이름 목록 (+ 기존 일정에 연결되어 있던 삭제된 상황 이름 보존)
+            final situationNames = <String>[
+              ...widget.situations.map((s) => s.name),
+            ];
+            if (selectedSituationName != null &&
+                !situationNames.contains(selectedSituationName)) {
+              situationNames.add(selectedSituationName!);
+            }
 
             return AlertDialog(
               title: Text(
@@ -509,40 +604,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      if (widget.situations.isNotEmpty) ...[
-                        const Text(
-                          '외출 상황 빠른 불러오기 (선택 시 이름·태그 자동 입력)',
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const SizedBox(height: 6),
-                        Wrap(
-                          spacing: 6,
-                          runSpacing: 6,
-                          children: widget.situations.map((sit) {
-                            return ActionChip(
-                              avatar: Icon(
-                                sit.iconData,
-                                size: 16,
-                                color: sit.color,
-                              ),
-                              label: Text(sit.name),
-                              onPressed: () {
-                                HapticFeedback.selectionClick();
-                                setDialogState(() {
-                                  if (titleController.text.trim().isEmpty) {
-                                    titleController.text = sit.name;
-                                  }
-                                  tagController.text = sit.tag;
-                                });
-                              },
-                            );
-                          }).toList(),
-                        ),
-                        const SizedBox(height: 14),
-                      ],
                       TextField(
                         controller: titleController,
                         autofocus: existing == null,
@@ -609,24 +670,120 @@ class _CalendarScreenState extends State<CalendarScreen> {
                           ),
                         ],
                       ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: tagController,
-                        decoration: const InputDecoration(
-                          labelText: '태그 (상황과 연동)',
-                          prefixText: '#',
-                          border: OutlineInputBorder(),
-                          isDense: true,
+                      const SizedBox(height: 14),
+
+                      // --- 1. 태그 선택 (다중 선택 가능 + 직접 입력 칩) ---
+                      const Text(
+                        '태그 선택 (캘린더 필터용 · 중복 선택 가능)',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
                         ),
                       ),
-                      const SizedBox(height: 12),
+                      const SizedBox(height: 6),
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 6,
+                        children: [
+                          ...availableTags.map((tag) {
+                            final isSelected = selectedTags.contains(tag);
+                            return FilterChip(
+                              visualDensity: VisualDensity.compact,
+                              label: Text('#$tag'),
+                              selected: isSelected,
+                              onSelected: (selected) {
+                                HapticFeedback.selectionClick();
+                                setDialogState(() {
+                                  if (selected) {
+                                    selectedTags.add(tag);
+                                  } else {
+                                    selectedTags.remove(tag);
+                                  }
+                                });
+                              },
+                            );
+                          }),
+                          ActionChip(
+                            visualDensity: VisualDensity.compact,
+                            avatar: const Icon(Icons.add, size: 16),
+                            label: const Text('직접 입력'),
+                            onPressed: () =>
+                                promptDirectTagInput(setDialogState),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 14),
+
+                      // --- 2. 연결할 외출 상황 체크리스트 (단일 선택) ---
+                      const Text(
+                        '연결할 체크리스트 상황 (단일 선택)',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 6,
+                        children: [
+                          ChoiceChip(
+                            visualDensity: VisualDensity.compact,
+                            label: const Text('선택 안 함'),
+                            selected: selectedSituationName == null,
+                            onSelected: (_) {
+                              HapticFeedback.selectionClick();
+                              setDialogState(() {
+                                selectedSituationName = null;
+                              });
+                            },
+                          ),
+                          ...situationNames.map((sitName) {
+                            final sitObj = _findSituationByName(sitName);
+                            final isSelected =
+                                selectedSituationName == sitName;
+                            return ChoiceChip(
+                              visualDensity: VisualDensity.compact,
+                              avatar: sitObj != null
+                                  ? Icon(
+                                      sitObj.iconData,
+                                      size: 16,
+                                      color: isSelected
+                                          ? Colors.white
+                                          : sitObj.color,
+                                    )
+                                  : const Icon(
+                                      Icons.checklist_rtl,
+                                      size: 16,
+                                    ),
+                              label: Text(sitName),
+                              selected: isSelected,
+                              selectedColor: sitObj?.color,
+                              labelStyle: TextStyle(
+                                color: (isSelected && sitObj != null)
+                                    ? Colors.white
+                                    : null,
+                              ),
+                              onSelected: (selected) {
+                                HapticFeedback.selectionClick();
+                                setDialogState(() {
+                                  selectedSituationName =
+                                      selected ? sitName : null;
+                                });
+                              },
+                            );
+                          }),
+                        ],
+                      ),
+                      const SizedBox(height: 14),
+
                       DropdownButtonFormField<int?>(
                         initialValue: _prepOptions.any(
                                 (e) => e.value == selectedPrepMinutes)
                             ? selectedPrepMinutes
                             : null,
                         decoration: const InputDecoration(
-                          labelText: '준비시간 (체크리스트 확인 알림)',
+                          labelText: '준비시간 (체크리스트 자동 포커싱)',
                           prefixIcon: Icon(Icons.notifications_outlined),
                           border: OutlineInputBorder(),
                           isDense: true,
@@ -644,8 +801,9 @@ class _CalendarScreenState extends State<CalendarScreen> {
                           });
                         },
                       ),
-                      const SizedBox(height: 14),
-                      // --- 반복 옵션 선택 ---
+                      const SizedBox(height: 12),
+
+                      // --- 3. 반복 옵션 선택 ---
                       DropdownButtonFormField<ScheduleRepeatType>(
                         initialValue: selectedRepeatType,
                         decoration: const InputDecoration(
@@ -672,7 +830,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
                           });
                         },
                       ),
-                      // --- 반복 상세 추가 옵션 (반복 안 함 제외) ---
                       if (isRepeating) ...[
                         const SizedBox(height: 12),
                         Container(
@@ -691,7 +848,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              // 1) n 설정 (간격)
                               Row(
                                 children: [
                                   const Text(
@@ -731,7 +887,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                   ),
                                 ],
                               ),
-                              // 2) n주마다 설정 시 요일 선택 옵션
                               if (selectedRepeatType ==
                                   ScheduleRepeatType.weekly) ...[
                                 const SizedBox(height: 12),
@@ -784,7 +939,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                 ),
                               ],
                               const Divider(height: 20),
-                              // 3) 공통 종료 조건 (계속 반복 / 반복 횟수 / 종료 날짜)
                               const Text(
                                 '반복 종료 조건',
                                 style: TextStyle(
@@ -917,9 +1071,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
                 FilledButton(
                   onPressed: () async {
                     final title = titleController.text.trim();
-                    final tag =
-                        tagController.text.trim().replaceAll('#', '');
                     if (title.isEmpty) return;
+
+                    final finalTags = selectedTags.toList();
+                    await _addTagsToKnownPool(finalTags);
 
                     final parsedInterval =
                         (int.tryParse(intervalController.text.trim()) ?? 1)
@@ -938,6 +1093,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                 : List<int>.from(selectedWeekdays))
                             : <int>[];
 
+                    if (!ctx.mounted) return;
                     Navigator.pop(ctx);
                     HapticFeedback.mediumImpact();
 
@@ -949,7 +1105,8 @@ class _CalendarScreenState extends State<CalendarScreen> {
                         date: selectedStartDate,
                         title: title,
                         time: selectedTime,
-                        tag: tag,
+                        tags: finalTags,
+                        situationName: selectedSituationName,
                         repeatType: selectedRepeatType,
                         repeatInterval: parsedInterval,
                         repeatWeekdays: finalWeekdays,
@@ -963,6 +1120,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                     }
 
                     // 기존 반복 일정 수정 시 범위 선택
+                    if (!mounted) return;
                     if (existing.isRepeating) {
                       final scope = await showDialog<String>(
                         context: context,
@@ -1005,7 +1163,8 @@ class _CalendarScreenState extends State<CalendarScreen> {
                           date: initialDay,
                           title: title,
                           time: selectedTime,
-                          tag: tag,
+                          tags: finalTags,
+                          situationName: selectedSituationName,
                           repeatType: ScheduleRepeatType.none,
                           prepMinutesBefore: selectedPrepMinutes,
                         );
@@ -1028,7 +1187,8 @@ class _CalendarScreenState extends State<CalendarScreen> {
                           date: selectedStartDate,
                           title: title,
                           time: selectedTime,
-                          tag: tag,
+                          tags: finalTags,
+                          situationName: selectedSituationName,
                           repeatType: selectedRepeatType,
                           repeatInterval: parsedInterval,
                           repeatWeekdays: finalWeekdays,
@@ -1046,7 +1206,8 @@ class _CalendarScreenState extends State<CalendarScreen> {
                     existing.date = selectedStartDate;
                     existing.title = title;
                     existing.time = selectedTime;
-                    existing.tag = tag;
+                    existing.tags = finalTags;
+                    existing.situationName = selectedSituationName;
                     existing.repeatType = selectedRepeatType;
                     existing.repeatInterval = parsedInterval;
                     existing.repeatWeekdays = finalWeekdays;
@@ -1115,7 +1276,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Text(
-                                  '${schedule.title} (${schedule.time})',
+                                  '${schedule.title} · ${situation.name} (${schedule.time})',
                                   style: const TextStyle(
                                     fontSize: 18,
                                     fontWeight: FontWeight.bold,
@@ -1272,18 +1433,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
           const SizedBox(width: 6),
           ...List.generate(orderedTags.length, (idx) {
             final tag = orderedTags[idx];
-            final sit = _findSituationByTag(tag);
             final isSelected =
                 !_isAllFilterSelected && _selectedFilterTags.contains(tag);
 
             final chip = FilterChip(
-              avatar: sit != null
-                  ? Icon(
-                      sit.iconData,
-                      size: 16,
-                      color: sit.color,
-                    )
-                  : null,
               label: Text('#$tag'),
               selected: isSelected,
               onSelected: (_) => _toggleIndividualFilter(tag),
@@ -1344,7 +1497,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                           controller: _searchController,
                           autofocus: true,
                           decoration: InputDecoration(
-                            hintText: '전체 일정 이름·태그·시간 검색...',
+                            hintText: '전체 일정 이름·태그·상황·시간 검색...',
                             prefixIcon: const Icon(Icons.search),
                             suffixIcon: IconButton(
                               icon: const Icon(Icons.close),
@@ -1386,11 +1539,16 @@ class _CalendarScreenState extends State<CalendarScreen> {
                       itemCount: _searchedSchedules.length,
                       itemBuilder: (context, idx) {
                         final sc = _searchedSchedules[idx];
+                        final tagsStr =
+                            sc.tags.map((t) => '#$t').join(' ');
+                        final sitStr = sc.hasSituation
+                            ? ' [${sc.situationName}]'
+                            : '';
                         return ListTile(
                           leading: const Icon(Icons.event_note),
                           title: Text(sc.title),
                           subtitle: Text(
-                            '${sc.date.year}-${sc.date.month.toString().padLeft(2, '0')}-${sc.date.day.toString().padLeft(2, '0')} (${sc.time})  ${sc.tag.isNotEmpty ? "#${sc.tag}" : ""}',
+                            '${sc.date.year}-${sc.date.month.toString().padLeft(2, '0')}-${sc.date.day.toString().padLeft(2, '0')} (${sc.time})$sitStr  $tagsStr',
                           ),
                           onTap: () {
                             HapticFeedback.selectionClick();
@@ -1531,8 +1689,9 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                     mainAxisSize: MainAxisSize.min,
                                     children: events.take(maxItems).map((ev) {
                                       if (ev is Schedule) {
-                                        final sit =
-                                            _findSituationByTag(ev.tag);
+                                        final sit = _findSituationByName(
+                                          ev.situationName,
+                                        );
                                         final badgeColor =
                                             sit?.color ?? Colors.blue;
                                         return Container(
@@ -1759,7 +1918,9 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                       // 1) 일정 카드 목록
                                       ...daySchedules.map((sc) {
                                         final linkedSituation =
-                                            _findSituationByTag(sc.tag);
+                                            _findSituationByName(
+                                          sc.situationName,
+                                        );
                                         final color =
                                             linkedSituation?.color ??
                                                 Colors.blue;
@@ -1860,26 +2021,24 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                                   color: color,
                                                 ),
                                               ),
-                                              title: Row(
+                                              title: Wrap(
+                                                spacing: 6,
+                                                runSpacing: 4,
+                                                crossAxisAlignment:
+                                                    WrapCrossAlignment.center,
                                                 children: [
-                                                  Flexible(
-                                                    child: Text(
-                                                      sc.title,
-                                                      maxLines: 1,
-                                                      overflow:
-                                                          TextOverflow.ellipsis,
-                                                      style: const TextStyle(
-                                                        fontWeight:
-                                                            FontWeight.bold,
-                                                      ),
+                                                  Text(
+                                                    sc.title,
+                                                    style: const TextStyle(
+                                                      fontWeight:
+                                                          FontWeight.bold,
                                                     ),
                                                   ),
-                                                  if (sc.tag.isNotEmpty) ...[
-                                                    const SizedBox(width: 8),
+                                                  if (sc.hasSituation)
                                                     Container(
                                                       padding: const EdgeInsets
                                                           .symmetric(
-                                                        horizontal: 8,
+                                                        horizontal: 7,
                                                         vertical: 2,
                                                       ),
                                                       decoration: BoxDecoration(
@@ -1888,19 +2047,62 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                                         ),
                                                         borderRadius:
                                                             BorderRadius
-                                                                .circular(10),
+                                                                .circular(8),
+                                                      ),
+                                                      child: Row(
+                                                        mainAxisSize:
+                                                            MainAxisSize.min,
+                                                        children: [
+                                                          Icon(
+                                                            linkedSituation
+                                                                    ?.iconData ??
+                                                                Icons
+                                                                    .checklist_rtl,
+                                                            size: 12,
+                                                            color: color,
+                                                          ),
+                                                          const SizedBox(
+                                                            width: 3,
+                                                          ),
+                                                          Text(
+                                                            sc.situationName!,
+                                                            style: TextStyle(
+                                                              fontSize: 11,
+                                                              color: color,
+                                                              fontWeight:
+                                                                  FontWeight
+                                                                      .w600,
+                                                            ),
+                                                          ),
+                                                        ],
+                                                      ),
+                                                    ),
+                                                  ...sc.tags.map((tag) {
+                                                    return Container(
+                                                      padding: const EdgeInsets
+                                                          .symmetric(
+                                                        horizontal: 7,
+                                                        vertical: 2,
+                                                      ),
+                                                      decoration: BoxDecoration(
+                                                        color: Colors.grey
+                                                            .withValues(
+                                                          alpha: 0.15,
+                                                        ),
+                                                        borderRadius:
+                                                            BorderRadius
+                                                                .circular(8),
                                                       ),
                                                       child: Text(
-                                                        '#${sc.tag}',
-                                                        style: TextStyle(
+                                                        '#$tag',
+                                                        style: const TextStyle(
                                                           fontSize: 11,
-                                                          color: color,
                                                           fontWeight:
                                                               FontWeight.w600,
                                                         ),
                                                       ),
-                                                    ),
-                                                  ],
+                                                    );
+                                                  }),
                                                 ],
                                               ),
                                               subtitle: Column(

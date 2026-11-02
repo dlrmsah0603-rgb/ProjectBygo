@@ -7,10 +7,9 @@ class ChecklistItem {
 
   ChecklistItem({
     required this.id,
-    String? name,
-    String? title,
+    required this.name,
     this.isChecked = false,
-  }) : name = name ?? title ?? '';
+  });
 
   String get title => name;
   set title(String value) => name = value;
@@ -37,27 +36,42 @@ class ChecklistItem {
 class Situation {
   String id;
   String name;
-  String tag;
+  // String tag; // 추후 사용 가능성을 위해 주석 보존 (현재는 상황 이름 name으로만 식별)
   List<ChecklistItem> items;
   int iconCodePoint;
   int colorValue;
 
   Situation({
     required this.id,
-    String? name,
-    String? title,
-    required this.tag,
+    required this.name,
+    String tag = '', // 기존 StorageService 기본 프리셋 호출 하위 호환용 (사용하지 않음)
     required this.items,
     this.iconCodePoint = 0xe8f9, // Icons.work
     this.colorValue = 0xFF2196F3, // Colors.blue
-  }) : name = name ?? title ?? '';
+  });
 
   String get title => name;
   set title(String value) => name = value;
 
-  IconData get iconData =>
-      // ignore: non_const_argument_for_const_parameter
-      IconData(iconCodePoint, fontFamily: 'MaterialIcons');
+  static const List<IconData> availableIcons = [
+    Icons.work,
+    Icons.fitness_center,
+    Icons.flight_takeoff,
+    Icons.school,
+    Icons.shopping_bag,
+    Icons.coffee,
+    Icons.hiking,
+    Icons.medical_services,
+    Icons.celebration,
+    Icons.directions_car,
+  ];
+
+  IconData get iconData {
+    return availableIcons.firstWhere(
+      (icon) => icon.codePoint == iconCodePoint,
+      orElse: () => Icons.work,
+    );
+  }
 
   Color get color => Color(colorValue);
 
@@ -71,33 +85,18 @@ class Situation {
 
   factory Situation.fromJson(Map<String, dynamic> json) {
     final rawItems = (json['items'] as List<dynamic>?) ?? [];
-    final parsedItems = <ChecklistItem>[];
-
-    for (var i = 0; i < rawItems.length; i++) {
-      final element = rawItems[i];
-      if (element is String) {
-        parsedItems.add(
-          ChecklistItem(
-            id: '${DateTime.now().microsecondsSinceEpoch}_$i',
-            name: element,
-            isChecked: false,
-          ),
-        );
-      } else if (element is Map<String, dynamic>) {
-        parsedItems.add(ChecklistItem.fromJson(element));
-      } else if (element is Map) {
-        parsedItems.add(
-          ChecklistItem.fromJson(Map<String, dynamic>.from(element)),
-        );
-      }
-    }
-
     return Situation(
       id: (json['id'] as String?) ??
           DateTime.now().microsecondsSinceEpoch.toString(),
       name: (json['name'] as String?) ?? (json['title'] as String?) ?? '',
-      tag: (json['tag'] as String?) ?? '',
-      items: parsedItems,
+      // tag: (json['tag'] as String?) ?? '',
+      items: rawItems
+          .map(
+            (e) => ChecklistItem.fromJson(
+              Map<String, dynamic>.from(e as Map),
+            ),
+          )
+          .toList(),
       iconCodePoint: (json['iconCodePoint'] as int?) ?? Icons.work.codePoint,
       colorValue: (json['colorValue'] as int?) ?? Colors.blue.toARGB32(),
     );
@@ -108,7 +107,7 @@ class Situation {
       'id': id,
       'name': name,
       'title': name,
-      'tag': tag,
+      // 'tag': tag,
       'items': items.map((e) => e.toJson()).toList(),
       'iconCodePoint': iconCodePoint,
       'colorValue': colorValue,

@@ -1,30 +1,26 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import '../models/schedule_model.dart';
 import '../models/situation_model.dart';
 
 class SituationScreen extends StatefulWidget {
   final List<Situation> situations;
-  final ValueChanged<List<Situation>> onSituationsChanged;
+  final List<Schedule> schedules;
   final bool showTips;
-  final List<Schedule>? schedules;
-  final ValueChanged<List<Schedule>>? onSchedulesChanged;
-  final ValueChanged<Situation>? onChecklistCompleted;
   final String? selectedSituationId;
   final ValueChanged<String?>? onSelectedSituationChanged;
+  final ValueChanged<List<Situation>> onSituationsChanged;
+  final ValueChanged<List<Schedule>>? onSchedulesChanged;
 
   const SituationScreen({
     super.key,
     required this.situations,
-    required this.onSituationsChanged,
+    this.schedules = const [],
     this.showTips = true,
-    this.schedules,
-    this.onSchedulesChanged,
-    this.onChecklistCompleted,
     this.selectedSituationId,
     this.onSelectedSituationChanged,
+    required this.onSituationsChanged,
+    this.onSchedulesChanged,
   });
 
   @override
@@ -60,31 +56,12 @@ class _SituationScreenState extends State<SituationScreen> {
     Colors.teal,
     Colors.indigo,
     Colors.pink,
-    Colors.black87,
   ];
-
-  @override
-  void initState() {
-    super.initState();
-    _internalSelectedSituationId = widget.selectedSituationId;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _tryAutoFocusIncompletePrepSituation();
-    });
-  }
-
-  @override
-  void didUpdateWidget(covariant SituationScreen oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.selectedSituationId != oldWidget.selectedSituationId &&
-        widget.selectedSituationId != null) {
-      _internalSelectedSituationId = widget.selectedSituationId;
-    }
-  }
 
   String? get _effectiveSelectedId =>
       widget.selectedSituationId ?? _internalSelectedSituationId;
 
-  void _setSelectedId(String? id) {
+  void _setSelectedSituationId(String? id) {
     setState(() {
       _internalSelectedSituationId = id;
     });
@@ -92,39 +69,12 @@ class _SituationScreenState extends State<SituationScreen> {
   }
 
   Situation? get _selectedSituation {
-    final id = _effectiveSelectedId;
-    if (id == null) return null;
+    final targetId = _effectiveSelectedId;
+    if (targetId == null) return null;
     for (final s in widget.situations) {
-      if (s.id == id) return s;
+      if (s.id == targetId) return s;
     }
     return null;
-  }
-
-  /// 현재 시각 기준 [준비시간 ~ 해당 일정 시간] 내에 있는 해당 상황의 일정 리스트 반환
-  List<Schedule> _getActivePrepSchedulesForSituation(Situation situation) {
-    if (widget.schedules == null || situation.tag.trim().isEmpty) return [];
-    final now = DateTime.now();
-    final active = widget.schedules!.where((sc) {
-      return sc.tag.trim() == situation.tag.trim() && sc.isInPrepWindowAt(now);
-    }).toList();
-    active.sort((a, b) => a.time.compareTo(b.time));
-    return active;
-  }
-
-  /// 준비시간 ~ 일정 시간 내 미완료 체크리스트가 있으면 자동 포커싱
-  void _tryAutoFocusIncompletePrepSituation() {
-    if (!mounted) return;
-    for (final sit in widget.situations) {
-      final activeSchedules = _getActivePrepSchedulesForSituation(sit);
-      if (activeSchedules.isNotEmpty &&
-          sit.items.isNotEmpty &&
-          !sit.isAllChecked) {
-        if (_effectiveSelectedId != sit.id) {
-          _setSelectedId(sit.id);
-        }
-        return;
-      }
-    }
   }
 
   void _notifyParent() {
@@ -132,14 +82,8 @@ class _SituationScreenState extends State<SituationScreen> {
     widget.onSituationsChanged(widget.situations);
   }
 
-  /// 상황 체크리스트가 전부 체크 완료되었을 때 캘린더에 기록용 일정 자동 추가
-  Future<void> _recordSituationCompletionToCalendar(
-    Situation situation,
-  ) async {
-    if (widget.onChecklistCompleted != null) {
-      widget.onChecklistCompleted!(situation);
-      return;
-    }
+  void _registerCompletedChecklistToCalendar(Situation situation) {
+    if (widget.onSchedulesChanged == null) return;
 
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
@@ -148,116 +92,64 @@ class _SituationScreenState extends State<SituationScreen> {
     final currentTimeStr = '$hh:$mm';
     final recordTitle = '${situation.name} 체크리스트 완료';
 
-    if (widget.schedules != null) {
-      Schedule? existingRecord;
-      for (final sc in widget.schedules!) {
-        if (sc.isAutoRecord &&
-            sc.tag.trim() == situation.tag.trim() &&
-            sc.date.year == today.year &&
-            sc.date.month == today.month &&
-            sc.date.day == today.day) {
-          existingRecord = sc;
-          break;
-        }
+    Schedule? existingRecord;
+    for (final sc in widget.schedules) {
+      if (sc.isAutoRecord &&
+          sc.situationName?.trim() == situation.name.trim() &&
+          sc.date.year == today.year &&
+          sc.date.month == today.month &&
+          sc.date.day == today.day) {
+        existingRecord = sc;
+        break;
       }
+    }
 
-      Schedule targetRecord;
-      final bool isNew;
+    Schedule? addedOrUpdated;
+    bool wasAdded = false;
+
+    setState(() {
       if (existingRecord != null) {
         existingRecord.time = currentTimeStr;
         existingRecord.title = recordTitle;
-        targetRecord = existingRecord;
-        isNew = false;
+        addedOrUpdated = existingRecord;
       } else {
-        targetRecord = Schedule(
+        addedOrUpdated = Schedule(
           id: 'record_${now.microsecondsSinceEpoch}',
           date: today,
           title: recordTitle,
           time: currentTimeStr,
-          tag: situation.tag,
+          situationName: situation.name,
           isAutoRecord: true,
         );
-        widget.schedules!.add(targetRecord);
-        isNew = true;
+        widget.schedules.add(addedOrUpdated!);
+        wasAdded = true;
       }
-      widget.onSchedulesChanged?.call(widget.schedules!);
+    });
+    widget.onSchedulesChanged!(widget.schedules);
 
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).clearSnackBars();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            "🎉 '${situation.name}' 체크리스트 완료! 캘린더에 기록이 자동 추가되었습니다.",
-          ),
-          behavior: SnackBarBehavior.floating,
-          action: isNew
-              ? SnackBarAction(
-                  label: '실행 취소',
-                  onPressed: () {
-                    HapticFeedback.lightImpact();
-                    widget.schedules!.remove(targetRecord);
-                    widget.onSchedulesChanged?.call(widget.schedules!);
-                  },
-                )
-              : null,
+    ScaffoldMessenger.of(context).clearSnackBars();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          "🎉 '${situation.name}' 체크리스트 완료! 캘린더에 기록이 자동 추가되었습니다.",
         ),
-      );
-      return;
-    }
-
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getString('schedules');
-      final List<Schedule> list = raw != null
-          ? (jsonDecode(raw) as List<dynamic>)
-              .map((e) => Schedule.fromJson(e as Map<String, dynamic>))
-              .toList()
-          : <Schedule>[];
-
-      Schedule? existingRecord;
-      for (final sc in list) {
-        if (sc.isAutoRecord &&
-            sc.tag.trim() == situation.tag.trim() &&
-            sc.date.year == today.year &&
-            sc.date.month == today.month &&
-            sc.date.day == today.day) {
-          existingRecord = sc;
-          break;
-        }
-      }
-
-      if (existingRecord != null) {
-        existingRecord.time = currentTimeStr;
-        existingRecord.title = recordTitle;
-      } else {
-        list.add(
-          Schedule(
-            id: 'record_${now.microsecondsSinceEpoch}',
-            date: today,
-            title: recordTitle,
-            time: currentTimeStr,
-            tag: situation.tag,
-            isAutoRecord: true,
-          ),
-        );
-      }
-
-      await prefs.setString(
-        'schedules',
-        jsonEncode(list.map((s) => s.toJson()).toList()),
-      );
-
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).clearSnackBars();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            "🎉 '${situation.name}' 체크리스트 완료! 캘린더에 기록이 자동 추가되었습니다.",
-          ),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-    } catch (_) {}
+        behavior: SnackBarBehavior.floating,
+        action: wasAdded
+            ? SnackBarAction(
+                label: '실행 취소',
+                onPressed: () {
+                  HapticFeedback.lightImpact();
+                  setState(() {
+                    if (addedOrUpdated != null) {
+                      widget.schedules.remove(addedOrUpdated);
+                    }
+                  });
+                  widget.onSchedulesChanged!(widget.schedules);
+                },
+              )
+            : null,
+      ),
+    );
   }
 
   void _exitMultiSelectMode() {
@@ -282,7 +174,7 @@ class _SituationScreenState extends State<SituationScreen> {
       widget.situations.removeWhere((s) => _multiSelectedIds.contains(s.id));
       if (_effectiveSelectedId != null &&
           _multiSelectedIds.contains(_effectiveSelectedId)) {
-        _setSelectedId(null);
+        _setSelectedSituationId(null);
       }
       _multiSelectedIds.clear();
       _isMultiSelectMode = false;
@@ -311,7 +203,6 @@ class _SituationScreenState extends State<SituationScreen> {
   }
 
   void _toggleAllItems(Situation situation) {
-    final wasAllChecked = situation.isAllChecked;
     final targetState = !situation.isAllChecked;
     if (targetState) {
       HapticFeedback.heavyImpact();
@@ -322,9 +213,8 @@ class _SituationScreenState extends State<SituationScreen> {
       item.isChecked = targetState;
     }
     _notifyParent();
-
-    if (!wasAllChecked && situation.isAllChecked) {
-      _recordSituationCompletionToCalendar(situation);
+    if (targetState && situation.isAllChecked) {
+      _registerCompletedChecklistToCalendar(situation);
     }
   }
 
@@ -337,9 +227,8 @@ class _SituationScreenState extends State<SituationScreen> {
       HapticFeedback.lightImpact();
     }
     _notifyParent();
-
     if (!wasAllChecked && situation.isAllChecked) {
-      _recordSituationCompletionToCalendar(situation);
+      _registerCompletedChecklistToCalendar(situation);
     }
   }
 
@@ -351,7 +240,7 @@ class _SituationScreenState extends State<SituationScreen> {
     ScaffoldMessenger.of(context).clearSnackBars();
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text("'${removedItem.name}' 체크리스트 항목이 삭제되었습니다."),
+        content: Text("'${removedItem.name}' 항목이 삭제되었습니다."),
         behavior: SnackBarBehavior.floating,
         action: SnackBarAction(
           label: '실행 취소',
@@ -369,7 +258,6 @@ class _SituationScreenState extends State<SituationScreen> {
   void _showSituationDialog({Situation? existing}) {
     HapticFeedback.selectionClick();
     final nameController = TextEditingController(text: existing?.name ?? '');
-    final tagController = TextEditingController(text: existing?.tag ?? '');
     int selectedIconCode = existing?.iconCodePoint ?? Icons.work.codePoint;
     int selectedColorValue =
         existing?.colorValue ?? Colors.blue.toARGB32();
@@ -388,17 +276,9 @@ class _SituationScreenState extends State<SituationScreen> {
                   children: [
                     TextField(
                       controller: nameController,
+                      autofocus: existing == null,
                       decoration: const InputDecoration(
-                        labelText: '상황 이름 (예: 출근, 운동, 여행)',
-                        border: OutlineInputBorder(),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    TextField(
-                      controller: tagController,
-                      decoration: const InputDecoration(
-                        labelText: '연동 태그 (예: 출근)',
-                        prefixText: '#',
+                        labelText: '상황 이름 (예: 본사 출근, 헬스장, 야외 러닝)',
                         border: OutlineInputBorder(),
                       ),
                     ),
@@ -488,8 +368,6 @@ class _SituationScreenState extends State<SituationScreen> {
                 FilledButton(
                   onPressed: () {
                     final name = nameController.text.trim();
-                    final tag =
-                        tagController.text.trim().replaceAll('#', '');
                     if (name.isEmpty) return;
 
                     HapticFeedback.mediumImpact();
@@ -499,18 +377,32 @@ class _SituationScreenState extends State<SituationScreen> {
                             .microsecondsSinceEpoch
                             .toString(),
                         name: name,
-                        tag: tag.isEmpty ? name : tag,
                         items: [],
                         iconCodePoint: selectedIconCode,
                         colorValue: selectedColorValue,
                       );
                       widget.situations.add(newSituation);
-                      _setSelectedId(newSituation.id);
+                      _setSelectedSituationId(newSituation.id);
                     } else {
+                      final oldName = existing.name;
                       existing.name = name;
-                      existing.tag = tag.isEmpty ? name : tag;
                       existing.iconCodePoint = selectedIconCode;
                       existing.colorValue = selectedColorValue;
+
+                      // 상황 이름이 변경된 경우 연결된 일정의 situationName도 동기화
+                      if (oldName != name &&
+                          widget.onSchedulesChanged != null) {
+                        bool schedUpdated = false;
+                        for (final sc in widget.schedules) {
+                          if (sc.situationName == oldName) {
+                            sc.situationName = name;
+                            schedUpdated = true;
+                          }
+                        }
+                        if (schedUpdated) {
+                          widget.onSchedulesChanged!(widget.schedules);
+                        }
+                      }
                     }
                     _notifyParent();
                     Navigator.pop(ctx);
@@ -537,7 +429,7 @@ class _SituationScreenState extends State<SituationScreen> {
           controller: controller,
           autofocus: true,
           decoration: const InputDecoration(
-            labelText: '체크리스트 항목 이름 (예: 지갑, 무선 이어폰, 우산)',
+            labelText: '항목 이름 (예: 지갑, 무선 이어폰, 우산)',
             border: OutlineInputBorder(),
           ),
           onSubmitted: (_) {
@@ -595,9 +487,6 @@ class _SituationScreenState extends State<SituationScreen> {
     bool isFeedback = false,
   }) {
     final isComplete = situation.isAllChecked;
-    final activePrepSchedules = _getActivePrepSchedulesForSituation(situation);
-    final isPrepActive = activePrepSchedules.isNotEmpty;
-
     final baseColor = isComplete ? Colors.green : situation.color;
     final effectiveColor =
         (_isMultiSelectMode && isMultiSelected) ? Colors.redAccent : baseColor;
@@ -611,7 +500,7 @@ class _SituationScreenState extends State<SituationScreen> {
       borderRadius: BorderRadius.circular(14),
       elevation: (isFilled || isFeedback) ? 4 : 0,
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 190),
+        constraints: const BoxConstraints(maxWidth: 160),
         child: Container(
           padding: const EdgeInsets.symmetric(
             horizontal: 14,
@@ -620,12 +509,10 @@ class _SituationScreenState extends State<SituationScreen> {
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(14),
             border: Border.all(
-              color: isPrepActive && !isComplete
-                  ? Colors.deepOrange
-                  : (isFilled
-                      ? effectiveColor
-                      : effectiveColor.withValues(alpha: 0.4)),
-              width: isPrepActive && !isComplete ? 2.0 : 1.5,
+              color: isFilled
+                  ? effectiveColor
+                  : effectiveColor.withValues(alpha: 0.4),
+              width: 1.5,
             ),
           ),
           child: Row(
@@ -642,11 +529,7 @@ class _SituationScreenState extends State<SituationScreen> {
                 const SizedBox(width: 6),
               ] else ...[
                 Icon(
-                  isComplete
-                      ? Icons.verified
-                      : (isPrepActive
-                          ? Icons.notifications_active
-                          : situation.iconData),
+                  isComplete ? Icons.verified : situation.iconData,
                   size: 18,
                   color: isFilled ? Colors.white : effectiveColor,
                 ),
@@ -654,13 +537,11 @@ class _SituationScreenState extends State<SituationScreen> {
               ],
               Flexible(
                 child: Text(
-                  isPrepActive
-                      ? '${situation.name} (준비중)'
-                      : situation.name,
+                  situation.name,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
-                    fontSize: 14,
+                    fontSize: 15,
                     fontWeight: FontWeight.bold,
                     color: isFilled ? Colors.white : effectiveColor,
                   ),
@@ -690,13 +571,13 @@ class _SituationScreenState extends State<SituationScreen> {
                 child: Text(
                   _isMultiSelectMode
                       ? '${_multiSelectedIds.length}개 선택됨 · 드래그하여 순서 변경'
-                      : '외출 상황 선택',
+                      : '외출 상황 선택 (꾹 눌러 순서 변경·다중 삭제)',
                   style: TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.bold,
                     color: _isMultiSelectMode
                         ? Theme.of(context).colorScheme.primary
-                        : Colors.black,
+                        : Colors.grey,
                   ),
                 ),
               ),
@@ -811,9 +692,9 @@ class _SituationScreenState extends State<SituationScreen> {
                           });
                         } else {
                           if (_effectiveSelectedId == situation.id) {
-                            _setSelectedId(null);
+                            _setSelectedSituationId(null);
                           } else {
-                            _setSelectedId(situation.id);
+                            _setSelectedSituationId(situation.id);
                           }
                         }
                       },
@@ -839,7 +720,6 @@ class _SituationScreenState extends State<SituationScreen> {
     final progress = situation.progress;
     final isComplete = situation.isAllChecked;
     final activeColor = isComplete ? Colors.green : situation.color;
-    final activePrepSchedules = _getActivePrepSchedulesForSituation(situation);
 
     return Expanded(
       child: SingleChildScrollView(
@@ -860,63 +740,6 @@ class _SituationScreenState extends State<SituationScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                if (activePrepSchedules.isNotEmpty) ...[
-                  Container(
-                    width: double.infinity,
-                    margin: const EdgeInsets.only(bottom: 12),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 8,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Colors.orange.withValues(alpha: 0.14),
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(
-                        color: Colors.orange.withValues(alpha: 0.4),
-                      ),
-                    ),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            const Icon(
-                              Icons.notifications_active,
-                              size: 16,
-                              color: Colors.deepOrange,
-                            ),
-                            const SizedBox(width: 6),
-                            Expanded(
-                              child: Text(
-                                activePrepSchedules.length > 1
-                                    ? '현재 준비시간 진행 중 (동일 #${situation.tag} 태그 ${activePrepSchedules.length}개 일정 체크리스트 공유)'
-                                    : '현재 준비시간 진행 중 (일정 시각 도달 시 자동 초기화)',
-                                style: const TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.deepOrange,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          activePrepSchedules
-                              .map(
-                                (sc) =>
-                                    '• ${sc.title} (준비 ${sc.prepTimeString ?? ""} ~ 일정 ${sc.time})',
-                              )
-                              .join('\n'),
-                          style: const TextStyle(
-                            fontSize: 11.5,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
                 Row(
                   children: [
                     CircleAvatar(
@@ -931,43 +754,14 @@ class _SituationScreenState extends State<SituationScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Row(
-                            children: [
-                              Flexible(
-                                child: Text(
-                                  situation.name,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                    fontSize: 18,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Container(
-                                constraints: const BoxConstraints(maxWidth: 90),
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 8,
-                                  vertical: 2,
-                                ),
-                                decoration: BoxDecoration(
-                                  color:
-                                      situation.color.withValues(alpha: 0.15),
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
-                                child: Text(
-                                  '#${situation.tag}',
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: situation.color,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                              ),
-                            ],
+                          Text(
+                            situation.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
                           ),
                           const SizedBox(height: 4),
                           Text(
@@ -1011,7 +805,7 @@ class _SituationScreenState extends State<SituationScreen> {
                         } else if (value == 'delete') {
                           HapticFeedback.mediumImpact();
                           widget.situations.remove(situation);
-                          _setSelectedId(null);
+                          _setSelectedSituationId(null);
                           _notifyParent();
                         }
                       },
@@ -1057,7 +851,6 @@ class _SituationScreenState extends State<SituationScreen> {
                     onReorderStart: (_) => HapticFeedback.selectionClick(),
                     onReorderItem: (oldIndex, newIndex) {
                       HapticFeedback.mediumImpact();
-                      if (newIndex > oldIndex) newIndex -= 1;
                       final moved = situation.items.removeAt(oldIndex);
                       situation.items.insert(newIndex, moved);
                       _notifyParent();
@@ -1085,7 +878,7 @@ class _SituationScreenState extends State<SituationScreen> {
                               ),
                               const SizedBox(width: 8),
                               Text(
-                                item.isChecked ? '체크 해제' : '체크 완료!',
+                                item.isChecked ? '체크 해제' : '완료!',
                                 style: const TextStyle(
                                   color: Colors.white,
                                   fontWeight: FontWeight.bold,
@@ -1158,7 +951,7 @@ class _SituationScreenState extends State<SituationScreen> {
                                   Icons.edit_outlined,
                                   size: 18,
                                 ),
-                                tooltip: '체크리스트 수정',
+                                tooltip: '항목 수정',
                                 onPressed: () => _showItemDialog(
                                   situation,
                                   existing: item,
@@ -1217,7 +1010,7 @@ class _SituationScreenState extends State<SituationScreen> {
                   SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      '팁: 준비시간 ~ 일정 시간에는 미완료 체크리스트가 자동 포커싱되며, 일정 정각에 초기화됩니다.',
+                      '팁: 상황 버튼을 꾹 누르면 순서 변경 및 다중 삭제가 가능합니다.',
                       style: TextStyle(fontSize: 12),
                     ),
                   ),
@@ -1231,7 +1024,7 @@ class _SituationScreenState extends State<SituationScreen> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     const Icon(
-                      Icons.checklist_rtl,
+                      Icons.backpack_outlined,
                       size: 64,
                       color: Colors.grey,
                     ),

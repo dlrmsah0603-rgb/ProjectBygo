@@ -444,8 +444,8 @@ class SettingsScreen extends StatelessWidget {
                   ),
                 ),
               ),
-              const Divider(height: 1),
               /*
+              const Divider(height: 1),
               SwitchListTile(
                 title: Text(
                   '하루 시작 시간(${_formatHourLabel(currentHour)})에 상황 체크리스트 자동 초기화',
