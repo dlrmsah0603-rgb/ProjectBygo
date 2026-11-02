@@ -674,7 +674,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
 
                       // --- 1. 태그 선택 (다중 선택 가능 + 직접 입력 칩) ---
                       const Text(
-                        '태그 선택 (캘린더 필터용 · 중복 선택 가능)',
+                        '태그 선택',
                         style: TextStyle(
                           fontSize: 12,
                           fontWeight: FontWeight.bold,
@@ -716,7 +716,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
 
                       // --- 2. 연결할 외출 상황 체크리스트 (단일 선택) ---
                       const Text(
-                        '연결할 체크리스트 상황 (단일 선택)',
+                        '연결할 체크리스트 상황',
                         style: TextStyle(
                           fontSize: 12,
                           fontWeight: FontWeight.bold,
@@ -783,7 +783,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                             ? selectedPrepMinutes
                             : null,
                         decoration: const InputDecoration(
-                          labelText: '준비시간 (체크리스트 자동 포커싱)',
+                          labelText: '준비 시간',
                           prefixIcon: Icon(Icons.notifications_outlined),
                           border: OutlineInputBorder(),
                           isDense: true,

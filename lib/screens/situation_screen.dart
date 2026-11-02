@@ -278,7 +278,7 @@ class _SituationScreenState extends State<SituationScreen> {
                       controller: nameController,
                       autofocus: existing == null,
                       decoration: const InputDecoration(
-                        labelText: '상황 이름 (예: 본사 출근, 헬스장, 야외 러닝)',
+                        labelText: '상황 이름',
                         border: OutlineInputBorder(),
                       ),
                     ),
