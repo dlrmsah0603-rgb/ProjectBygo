@@ -4,10 +4,12 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/schedule_model.dart';
 import '../models/situation_model.dart';
+import '../models/todo_model.dart';
 
 class StorageService {
   static const String _keySchedules = 'schedules';
   static const String _keySituations = 'situations';
+  static const String _keyTodos = 'todos';
   static const String _keyThemeMode = 'theme_mode';
   static const String _keySeedColor = 'seed_color';
   static const String _keyShowTips = 'show_tips';
@@ -67,6 +69,35 @@ class StorageService {
       final prefs = await SharedPreferences.getInstance();
       final encoded = jsonEncode(situations.map((s) => s.toJson()).toList());
       await prefs.setString(_keySituations, encoded);
+    } catch (_) {}
+  }
+
+  // --- 2-2. 할 일(Todos) 저장 및 불러오기 ---
+  Future<List<TodoItem>> loadTodos() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_keyTodos);
+      if (raw == null || raw.isEmpty) return [];
+
+      final decoded = jsonDecode(raw);
+      if (decoded is List) {
+        return decoded
+            .map(
+              (item) => TodoItem.fromJson(
+                Map<String, dynamic>.from(item as Map),
+              ),
+            )
+            .toList();
+      }
+    } catch (_) {}
+    return [];
+  }
+
+  Future<void> saveTodos(List<TodoItem> todos) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final encoded = jsonEncode(todos.map((t) => t.toJson()).toList());
+      await prefs.setString(_keyTodos, encoded);
     } catch (_) {}
   }
 
@@ -233,16 +264,18 @@ class StorageService {
   Future<String> exportBackupJson() async {
     final schedules = await loadSchedules();
     final situations = await loadSituations();
+    final todos = await loadTodos();
     final themeMode = await loadThemeMode();
     final seedColor = await loadSeedColor();
     final showTips = await loadShowTips();
     final autoReset = await loadAutoResetOnScheduleTime();
 
     final backupData = {
-      'version': 1,
+      'version': 2,
       'exportedAt': DateTime.now().toIso8601String(),
       'schedules': schedules.map((s) => s.toJson()).toList(),
       'situations': situations.map((s) => s.toJson()).toList(),
+      'todos': todos.map((t) => t.toJson()).toList(),
       'themeMode': themeMode == ThemeMode.light
           ? 'light'
           : (themeMode == ThemeMode.dark ? 'dark' : 'system'),
@@ -261,7 +294,8 @@ class StorageService {
 
       final hasSchedules = decoded['schedules'] is List;
       final hasSituations = decoded['situations'] is List;
-      if (!hasSchedules && !hasSituations) return false;
+      final hasTodos = decoded['todos'] is List;
+      if (!hasSchedules && !hasSituations && !hasTodos) return false;
 
       if (hasSchedules) {
         final schedules = (decoded['schedules'] as List)
@@ -277,6 +311,15 @@ class StorageService {
             )
             .toList();
         await saveSituations(situations);
+      }
+
+      if (hasTodos) {
+        final todos = (decoded['todos'] as List)
+            .map(
+              (e) => TodoItem.fromJson(Map<String, dynamic>.from(e as Map)),
+            )
+            .toList();
+        await saveTodos(todos);
       }
 
       if (decoded['themeMode'] is String) {
@@ -313,6 +356,7 @@ class StorageService {
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove(_keySchedules);
       await prefs.remove(_keySituations);
+      await prefs.remove(_keyTodos);
       await prefs.remove(_keyResetExecutedKeys);
     } catch (_) {}
   }

@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:table_calendar/table_calendar.dart';
 import '../models/schedule_model.dart';
 import '../models/situation_model.dart';
+import '../models/todo_model.dart';
 
 enum CalendarViewStage {
   twoWeeks, // 0: 2주 보기
@@ -28,8 +29,10 @@ enum _RepeatActionScope {
 class CalendarScreen extends StatefulWidget {
   final List<Schedule> schedules;
   final List<Situation> situations;
+  final List<TodoItem> todos;
   final ValueChanged<List<Schedule>> onSchedulesChanged;
   final ValueChanged<List<Situation>> onSituationsChanged;
+  final ValueChanged<List<TodoItem>>? onTodosChanged;
   final bool showTips;
   final List<String>? tagOrder;
   final ValueChanged<List<String>>? onTagOrderChanged;
@@ -39,8 +42,10 @@ class CalendarScreen extends StatefulWidget {
     super.key,
     required this.schedules,
     required this.situations,
+    this.todos = const [],
     required this.onSchedulesChanged,
     required this.onSituationsChanged,
+    this.onTodosChanged,
     this.showTips = true,
     this.tagOrder,
     this.onTagOrderChanged,
@@ -53,6 +58,7 @@ class CalendarScreen extends StatefulWidget {
 
 class _CalendarScreenState extends State<CalendarScreen> {
   static const String _tagOrderPrefKey = 'bygo_calendar_tag_order';
+  static const String _todoFilterTagKey = '__TODO_FILTER__';
 
   CalendarViewStage _viewStage = CalendarViewStage.month;
   DateTime _focusedDay = DateTime.now();
@@ -382,7 +388,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
     return null;
   }
 
-  List<Schedule> _getEventsForDay(DateTime day) {
+  List<Schedule> _getSchedulesForDay(DateTime day) {
+    if (_selectedFilterTag == _todoFilterTagKey) {
+      return [];
+    }
     final events = widget.schedules.where((sc) {
       final matchesDay = sc.occursOn(day);
       final matchesTag = _selectedFilterTag == null ||
@@ -395,6 +404,38 @@ class _CalendarScreenState extends State<CalendarScreen> {
 
     events.sort((a, b) => a.time.compareTo(b.time));
     return events;
+  }
+
+  /// 마감 기한 기준으로 해당 날짜의 할 일 조회 ('전체' 또는 '할 일' 필터일 때 표시)
+  List<TodoItem> _getTodosForDay(DateTime day) {
+    if (_selectedFilterTag != null && _selectedFilterTag != _todoFilterTagKey) {
+      return [];
+    }
+    final todos = widget.todos.where((t) {
+      if (t.dueDate == null) return false;
+      final matchesDay = isSameDay(t.dueDate, day);
+      final matchesSearch = _searchQuery.trim().isEmpty ||
+          t.title.toLowerCase().contains(_searchQuery.trim().toLowerCase());
+      return matchesDay && matchesSearch;
+    }).toList();
+
+    todos.sort((a, b) {
+      if (a.isCompleted != b.isCompleted) {
+        return a.isCompleted ? 1 : -1;
+      }
+      final ta = a.dueTime ?? '99:99';
+      final tb = b.dueTime ?? '99:99';
+      return ta.compareTo(tb);
+    });
+    return todos;
+  }
+
+  /// TableCalendar 마커 표시용 통합 로더 (Schedule + TodoItem)
+  List<Object> _getCalendarEntriesForDay(DateTime day) {
+    return [
+      ..._getSchedulesForDay(day),
+      ..._getTodosForDay(day),
+    ];
   }
 
   String _buildRepeatSummaryText(Schedule sc) {
@@ -642,7 +683,6 @@ class _CalendarScreenState extends State<CalendarScreen> {
     );
     final tagController = TextEditingController(text: existing?.tag ?? '');
     final selectedWeekdays = List<int>.from(existing?.repeatWeekdays ?? []);
-    // 새 일정 추가 시 기본 준비시간 30분 전으로 제공 (원치 않으면 '설정 안 함' 선택 가능)
     int? selectedPrepMinutes =
         existing != null ? existing.prepMinutesBefore : 30;
 
@@ -1552,6 +1592,8 @@ class _CalendarScreenState extends State<CalendarScreen> {
   }
 
   Widget _buildReorderableTagBar(List<String> tags) {
+    final isTodoSelected = _selectedFilterTag == _todoFilterTagKey;
+
     return Row(
       children: [
         FilterChip(
@@ -1560,6 +1602,25 @@ class _CalendarScreenState extends State<CalendarScreen> {
           onSelected: (_) {
             HapticFeedback.selectionClick();
             setState(() => _selectedFilterTag = null);
+          },
+        ),
+        const SizedBox(width: 8),
+        // 기본 '할 일' 태그 필터 버튼
+        FilterChip(
+          avatar: Icon(
+            Icons.task_alt,
+            size: 16,
+            color: isTodoSelected
+                ? Theme.of(context).colorScheme.onSecondaryContainer
+                : Theme.of(context).colorScheme.primary,
+          ),
+          label: const Text('할 일'),
+          selected: isTodoSelected,
+          onSelected: (selected) {
+            HapticFeedback.selectionClick();
+            setState(() {
+              _selectedFilterTag = selected ? _todoFilterTagKey : null;
+            });
           },
         ),
         const SizedBox(width: 8),
@@ -1622,6 +1683,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
   }) {
     final primaryColor = Theme.of(context).colorScheme.primary;
     final onPrimaryColor = Theme.of(context).colorScheme.onPrimary;
+    final now = DateTime.now();
 
     return GestureDetector(
       behavior: HitTestBehavior.translucent,
@@ -1629,7 +1691,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
       onVerticalDragUpdate: (d) => _onBarDragUpdate(d, stageHeights),
       onVerticalDragEnd: (d) => _onBarDragEnd(d, stageHeights),
       onVerticalDragCancel: () => _onBarDragCancel(stageHeights),
-      child: TableCalendar<Schedule>(
+      child: TableCalendar<Object>(
         firstDay: DateTime.utc(2020, 1, 1),
         lastDay: DateTime.utc(2035, 12, 31),
         focusedDay: _focusedDay,
@@ -1638,7 +1700,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
         rowHeight: rowHeight,
         daysOfWeekHeight: 22,
         selectedDayPredicate: (day) => isSameDay(_selectedDay, day),
-        eventLoader: _getEventsForDay,
+        eventLoader: _getCalendarEntriesForDay,
         onDaySelected: (selectedDay, focusedDay) {
           HapticFeedback.selectionClick();
           setState(() {
@@ -1698,35 +1760,70 @@ class _CalendarScreenState extends State<CalendarScreen> {
               ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
-                children: events.take(maxMarkers).map((sc) {
-                  final sit = _findSituationByTag(sc.tag);
-                  final badgeColor = sc.isAutoRecord
-                      ? Colors.green
-                      : (sit?.color ?? primaryColor);
-                  return Container(
-                    width: double.infinity,
-                    margin: const EdgeInsets.symmetric(vertical: 0.5),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 2,
-                      vertical: 0.5,
-                    ),
-                    decoration: BoxDecoration(
-                      color: badgeColor.withValues(alpha: 0.2),
-                      borderRadius: BorderRadius.circular(3),
-                    ),
-                    child: Text(
-                      sc.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 8.5,
-                        height: 1.1,
-                        fontWeight: FontWeight.w600,
-                        color: badgeColor,
+                children: events.take(maxMarkers).map((entry) {
+                  if (entry is Schedule) {
+                    final sit = _findSituationByTag(entry.tag);
+                    final badgeColor = entry.isAutoRecord
+                        ? Colors.green
+                        : (sit?.color ?? primaryColor);
+                    return Container(
+                      width: double.infinity,
+                      margin: const EdgeInsets.symmetric(vertical: 0.5),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 2,
+                        vertical: 0.5,
                       ),
-                    ),
-                  );
+                      decoration: BoxDecoration(
+                        color: badgeColor.withValues(alpha: 0.2),
+                        borderRadius: BorderRadius.circular(3),
+                      ),
+                      child: Text(
+                        entry.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 8.5,
+                          height: 1.1,
+                          fontWeight: FontWeight.w600,
+                          color: badgeColor,
+                        ),
+                      ),
+                    );
+                  } else if (entry is TodoItem) {
+                    final isOverdue = entry.isOverdueAt(now);
+                    final todoColor = entry.isCompleted
+                        ? Colors.grey
+                        : (isOverdue ? Colors.redAccent : Colors.teal);
+                    return Container(
+                      width: double.infinity,
+                      margin: const EdgeInsets.symmetric(vertical: 0.5),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 2,
+                        vertical: 0.5,
+                      ),
+                      decoration: BoxDecoration(
+                        color: todoColor.withValues(alpha: 0.18),
+                        borderRadius: BorderRadius.circular(3),
+                      ),
+                      child: Text(
+                        '✓ ${entry.title}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 8.5,
+                          height: 1.1,
+                          fontWeight: FontWeight.w600,
+                          color: todoColor,
+                          decoration: entry.isCompleted
+                              ? TextDecoration.lineThrough
+                              : null,
+                        ),
+                      ),
+                    );
+                  }
+                  return const SizedBox.shrink();
                 }).toList(),
               ),
             );
@@ -1801,7 +1898,9 @@ class _CalendarScreenState extends State<CalendarScreen> {
                 ),
                 const SizedBox(width: 6),
                 Text(
-                  '${activeDay.month}월 ${activeDay.day}일 일정 ($eventCount)',
+                  _selectedFilterTag == _todoFilterTagKey
+                      ? '${activeDay.month}월 ${activeDay.day}일 할 일 ($eventCount)'
+                      : '${activeDay.month}월 ${activeDay.day}일 일정·할 일 ($eventCount)',
                   style: const TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.bold,
@@ -1856,12 +1955,131 @@ class _CalendarScreenState extends State<CalendarScreen> {
     );
   }
 
+  Widget _buildTodoCardInCalendar(TodoItem todo, DateTime now) {
+    final isOverdue = todo.isOverdueAt(now);
+    final todoColor = todo.isCompleted
+        ? Colors.grey
+        : (isOverdue ? Colors.redAccent : Colors.teal);
+
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 4),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(
+          color: isOverdue
+              ? Colors.redAccent.withValues(alpha: 0.7)
+              : todoColor.withValues(alpha: 0.35),
+          width: isOverdue ? 1.5 : 1,
+        ),
+      ),
+      child: ListTile(
+        leading: Checkbox(
+          value: todo.isCompleted,
+          activeColor: todoColor,
+          onChanged: (val) {
+            final target = val ?? !todo.isCompleted;
+            if (target) {
+              HapticFeedback.heavyImpact();
+            } else {
+              HapticFeedback.lightImpact();
+            }
+            setState(() {
+              todo.toggleCompleted(target, DateTime.now());
+            });
+            widget.onTodosChanged?.call(widget.todos);
+          },
+        ),
+        title: Row(
+          children: [
+            Container(
+              margin: const EdgeInsets.only(right: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: todoColor.withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(
+                isOverdue ? '기한 지남' : '할 일',
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                  color: todoColor,
+                ),
+              ),
+            ),
+            Flexible(
+              child: Text(
+                todo.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  decoration:
+                      todo.isCompleted ? TextDecoration.lineThrough : null,
+                  color: todo.isCompleted
+                      ? Colors.grey
+                      : (isOverdue ? Colors.redAccent : null),
+                ),
+              ),
+            ),
+          ],
+        ),
+        subtitle: (todo.dueTime != null || todo.isRepeating)
+            ? Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Wrap(
+                  spacing: 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    if (todo.dueTime != null &&
+                        todo.dueTime!.trim().isNotEmpty)
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.access_time,
+                            size: 13,
+                            color: isOverdue ? Colors.redAccent : null,
+                          ),
+                          const SizedBox(width: 3),
+                          Text(
+                            todo.dueTime!,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: isOverdue ? Colors.redAccent : null,
+                            ),
+                          ),
+                        ],
+                      ),
+                    if (todo.isRepeating)
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.repeat, size: 13),
+                          const SizedBox(width: 2),
+                          Text(
+                            todo.repeatType.label,
+                            style: const TextStyle(fontSize: 12),
+                          ),
+                        ],
+                      ),
+                  ],
+                ),
+              )
+            : null,
+      ),
+    );
+  }
+
   Widget _buildScheduleList(
     DateTime activeDay,
     List<Schedule> selectedEvents,
+    List<TodoItem> selectedTodos,
     Map<CalendarViewStage, double> stageHeights,
   ) {
-    if (selectedEvents.isEmpty) {
+    final totalCount = selectedEvents.length + selectedTodos.length;
+
+    if (totalCount == 0) {
       return GestureDetector(
         behavior: HitTestBehavior.opaque,
         onVerticalDragStart: (d) => _onBarDragStart(d, stageHeights),
@@ -1875,7 +2093,9 @@ class _CalendarScreenState extends State<CalendarScreen> {
               child: SingleChildScrollView(
                 physics: const NeverScrollableScrollPhysics(),
                 child: Text(
-                  '선택한 날짜에 일정이 없습니다.\n(바를 잡고 움직여 2주 / 한달 / 확장 조절)',
+                  _selectedFilterTag == _todoFilterTagKey
+                      ? '선택한 날짜에 마감인 할 일이 없습니다.'
+                      : '선택한 날짜에 일정이 없습니다.\n(바를 잡고 움직여 2주 / 한달 / 확장 조절)',
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     color: Colors.grey.shade600,
@@ -1908,8 +2128,14 @@ class _CalendarScreenState extends State<CalendarScreen> {
       child: ListView.builder(
         physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.fromLTRB(12, 8, 12, 80),
-        itemCount: selectedEvents.length,
+        itemCount: totalCount,
         itemBuilder: (context, index) {
+          // 일정들을 먼저 표시하고, 그 아래에 해당 날짜 마감인 할 일 표시
+          if (index >= selectedEvents.length) {
+            final todo = selectedTodos[index - selectedEvents.length];
+            return _buildTodoCardInCalendar(todo, now);
+          }
+
           final sc = selectedEvents[index];
           final linkedSit = _findSituationByTag(sc.tag);
           final isComplete =
@@ -2167,7 +2393,8 @@ class _CalendarScreenState extends State<CalendarScreen> {
   @override
   Widget build(BuildContext context) {
     final activeDay = _selectedDay ?? _focusedDay;
-    final selectedEvents = _getEventsForDay(activeDay);
+    final selectedEvents = _getSchedulesForDay(activeDay);
+    final selectedTodos = _getTodosForDay(activeDay);
     final tags = _allAvailableTags;
 
     return Scaffold(
@@ -2185,7 +2412,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                 ),
                 IconButton(
                   icon: Icon(_isSearching ? Icons.close : Icons.search),
-                  tooltip: '일정 검색',
+                  tooltip: '일정·할 일 검색',
                   onPressed: () {
                     setState(() {
                       _isSearching = !_isSearching;
@@ -2206,7 +2433,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                 controller: _searchController,
                 autofocus: true,
                 decoration: InputDecoration(
-                  hintText: '일정 이름 또는 #태그 검색...',
+                  hintText: '일정, 할 일 또는 #태그 검색...',
                   prefixIcon: const Icon(Icons.search),
                   isDense: true,
                   border: OutlineInputBorder(
@@ -2229,7 +2456,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                   const SizedBox(width: 4),
                   Expanded(
                     child: Text(
-                      '팁: #태그 버튼을 꾹 눌러 순서를 바꾸고, 바를 움직여 2주/한달/확장을 조절하세요.',
+                      '팁: 상단 [할 일] 필터로 마감일 기준 할 일을 모아보고, #태그를 꾹 눌러 순서를 변경하세요.',
                       style: TextStyle(
                         fontSize: 11,
                         color: Colors.grey.shade600,
@@ -2302,7 +2529,8 @@ class _CalendarScreenState extends State<CalendarScreen> {
                     ),
                     _buildSchedulePanelHeader(
                       activeDay: activeDay,
-                      eventCount: selectedEvents.length,
+                      eventCount:
+                          selectedEvents.length + selectedTodos.length,
                       activeStageHighlight: activeStageHighlight,
                       stageHeights: stageHeights,
                     ),
@@ -2311,6 +2539,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                         child: _buildScheduleList(
                           activeDay,
                           selectedEvents,
+                          selectedTodos,
                           stageHeights,
                         ),
                       ),

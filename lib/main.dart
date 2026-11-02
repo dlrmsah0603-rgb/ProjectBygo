@@ -3,9 +3,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'models/schedule_model.dart';
 import 'models/situation_model.dart';
+import 'models/todo_model.dart';
 import 'screens/calendar_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/situation_screen.dart';
+import 'screens/todo_screen.dart';
 import 'services/storage_service.dart';
 
 void main() {
@@ -39,6 +41,7 @@ class _BygoAppState extends State<BygoApp> {
 
   List<Schedule> _schedules = [];
   List<Situation> _situations = [];
+  List<TodoItem> _todos = [];
   ThemeMode _themeMode = ThemeMode.system;
   int _seedColorValue = Colors.indigo.toARGB32();
   bool _showTips = true;
@@ -69,6 +72,7 @@ class _BygoAppState extends State<BygoApp> {
   Future<void> _loadInitialData() async {
     final schedules = await _storage.loadSchedules();
     final situations = await _storage.loadSituations();
+    final todos = await _storage.loadTodos();
     final themeMode = await _storage.loadThemeMode();
     final seedColor = await _storage.loadSeedColor();
     final showTips = await _storage.loadShowTips();
@@ -79,6 +83,7 @@ class _BygoAppState extends State<BygoApp> {
     setState(() {
       _schedules = schedules;
       _situations = situations;
+      _todos = todos;
       _themeMode = themeMode;
       _seedColorValue = seedColor;
       _showTips = showTips;
@@ -165,8 +170,21 @@ class _BygoAppState extends State<BygoApp> {
 
     bool situationsModified = false;
     bool resetKeysModified = false;
+    bool todosModified = false;
     final List<String> resetNoticeMessages = [];
 
+    // 0. 완료된 반복 할 일이 다음 주기 날짜(자정)에 도달했으면 다시 진행 중으로 전환 (B안)
+    for (final todo in _todos) {
+      if (todo.checkAndReactivateIfDue(now)) {
+        todosModified = true;
+      }
+    }
+    if (todosModified) {
+      setState(() {});
+      _storage.saveTodos(_todos);
+    }
+
+    // 1. 일정 정각 도달 시 체크리스트 자동 초기화
     if (_autoResetOnScheduleTime) {
       for (final sc in _schedules) {
         if (sc.isAutoRecord) continue;
@@ -314,10 +332,11 @@ class _BygoAppState extends State<BygoApp> {
               messenger.hideCurrentMaterialBanner();
               setState(() {
                 _selectedSituationId = situation.id;
-                _currentIndex = 1;
+                // 상황·체크리스트 탭은 이제 2번 인덱스
+                _currentIndex = 2;
               });
               _pageController.animateToPage(
-                1,
+                2,
                 duration: const Duration(milliseconds: 250),
                 curve: Curves.easeOutCubic,
               );
@@ -383,252 +402,6 @@ class _BygoAppState extends State<BygoApp> {
     );
   }
 
-  void _registerCompletedChecklistFromWidget(Situation situation) {
-    final now = DateTime.now();
-    final today = _dateOnly(now);
-    final hh = now.hour.toString().padLeft(2, '0');
-    final mm = now.minute.toString().padLeft(2, '0');
-    final currentTimeStr = '$hh:$mm';
-    final recordTitle = '${situation.name} 체크리스트 완료';
-
-    Schedule? existingRecord;
-    for (final sc in _schedules) {
-      if (sc.isAutoRecord &&
-          sc.tag.trim() == situation.tag.trim() &&
-          sc.date.year == today.year &&
-          sc.date.month == today.month &&
-          sc.date.day == today.day) {
-        existingRecord = sc;
-        break;
-      }
-    }
-
-    setState(() {
-      if (existingRecord != null) {
-        existingRecord.time = currentTimeStr;
-        existingRecord.title = recordTitle;
-      } else {
-        _schedules.add(
-          Schedule(
-            id: 'record_${now.microsecondsSinceEpoch}',
-            date: today,
-            title: recordTitle,
-            time: currentTimeStr,
-            tag: situation.tag,
-            isAutoRecord: true,
-          ),
-        );
-      }
-    });
-    _storage.saveSchedules(_schedules);
-
-    _messengerKey.currentState?.clearSnackBars();
-    _messengerKey.currentState?.showSnackBar(
-      SnackBar(
-        content: Text(
-          "🎉 '${situation.name}' 체크리스트 완료! 캘린더에 기록이 자동 추가되었습니다.",
-        ),
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
-  }
-
-  Widget _buildHomeScreenWidgetCard(List<ActivePrepGroup> activeGroups) {
-    final scheme = Theme.of(context).colorScheme;
-
-    return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.fromLTRB(12, 6, 12, 6),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: scheme.surfaceContainerHighest.withValues(alpha: 0.65),
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(
-          color: activeGroups.isNotEmpty
-              ? scheme.primary.withValues(alpha: 0.5)
-              : Colors.grey.withValues(alpha: 0.3),
-          width: 1.5,
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.06),
-            blurRadius: 8,
-            offset: const Offset(0, 3),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
-            children: [
-              Icon(
-                Icons.widgets_rounded,
-                size: 16,
-                color: scheme.primary,
-              ),
-              const SizedBox(width: 6),
-              Text(
-                'Bygo 홈 화면 위젯',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                  color: scheme.primary,
-                ),
-              ),
-              const Spacer(),
-              if (activeGroups.isNotEmpty)
-                const Text(
-                  '준비시간 ~ 일정시간 활성',
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.deepOrange,
-                  ),
-                ),
-              const SizedBox(width: 6),
-              InkWell(
-                borderRadius: BorderRadius.circular(12),
-                onTap: () {
-                  HapticFeedback.selectionClick();
-                  setState(() => _showHomeWidgetPanel = false);
-                },
-                child: const Padding(
-                  padding: EdgeInsets.all(2),
-                  child: Icon(Icons.close, size: 16),
-                ),
-              ),
-            ],
-          ),
-          const Divider(height: 14),
-          if (activeGroups.isEmpty)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 14),
-              child: Center(
-                child: Text(
-                  '예정된 일정이 없습니다.',
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.grey,
-                  ),
-                ),
-              ),
-            )
-          else
-            ConstrainedBox(
-              constraints: const BoxConstraints(maxHeight: 210),
-              child: SingleChildScrollView(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: activeGroups.map((group) {
-                    final sit = group.situation;
-                    final schedulesText = group.schedules
-                        .map(
-                          (s) =>
-                              '${s.title} (${s.prepTimeString ?? ""}~${s.time})',
-                        )
-                        .join(', ');
-                    final isComplete = sit.isAllChecked;
-                    final accentColor = isComplete ? Colors.green : sit.color;
-
-                    return Padding(
-                      padding: const EdgeInsets.only(bottom: 8),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              Icon(
-                                isComplete ? Icons.verified : sit.iconData,
-                                size: 16,
-                                color: accentColor,
-                              ),
-                              const SizedBox(width: 6),
-                              Expanded(
-                                child: Text(
-                                  '${sit.name} (#${sit.tag}) · $schedulesText',
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ),
-                              Text(
-                                '${sit.checkedCount}/${sit.items.length}',
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.bold,
-                                  color: accentColor,
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 6),
-                          if (sit.items.isEmpty)
-                            const Text(
-                              '등록된 체크리스트 항목이 없습니다.',
-                              style: TextStyle(
-                                fontSize: 12,
-                                color: Colors.grey,
-                              ),
-                            )
-                          else
-                            Wrap(
-                              spacing: 6,
-                              runSpacing: 6,
-                              children: sit.items.map((item) {
-                                return FilterChip(
-                                  visualDensity: VisualDensity.compact,
-                                  selected: item.isChecked,
-                                  selectedColor:
-                                      accentColor.withValues(alpha: 0.2),
-                                  checkmarkColor: accentColor,
-                                  label: Text(
-                                    item.name,
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      decoration: item.isChecked
-                                          ? TextDecoration.lineThrough
-                                          : null,
-                                    ),
-                                  ),
-                                  onSelected: (val) {
-                                    final wasAllChecked = sit.isAllChecked;
-                                    setState(() {
-                                      item.isChecked = val;
-                                    });
-                                    if (sit.isAllChecked) {
-                                      HapticFeedback.heavyImpact();
-                                    } else {
-                                      HapticFeedback.lightImpact();
-                                    }
-                                    _storage.saveSituations(_situations);
-                                    if (!wasAllChecked && sit.isAllChecked) {
-                                      _registerCompletedChecklistFromWidget(
-                                        sit,
-                                      );
-                                    }
-                                    _evaluateScheduleLifecycle();
-                                  },
-                                );
-                              }).toList(),
-                            ),
-                        ],
-                      ),
-                    );
-                  }).toList(),
-                ),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
   ThemeData _buildTheme(Brightness brightness) {
     final isBlackAndWhite =
         _seedColorValue == SettingsScreen.blackAndWhiteColorValue;
@@ -681,10 +454,6 @@ class _BygoAppState extends State<BygoApp> {
 
   @override
   Widget build(BuildContext context) {
-    final activeGroups = _isLoaded
-        ? _getActivePrepGroups(DateTime.now())
-        : const <ActivePrepGroup>[];
-
     return MaterialApp(
       title: 'Bygo',
       scaffoldMessengerKey: _messengerKey,
@@ -703,126 +472,105 @@ class _BygoAppState extends State<BygoApp> {
                   style: TextStyle(fontWeight: FontWeight.bold),
                 ),
                 centerTitle: false,
-                /*
-                actions: [
-                  Padding(
-                    padding: const EdgeInsets.only(right: 10),
-                    child: ActionChip(
-                      avatar: Icon(
-                        Icons.widgets_outlined,
-                        size: 16,
-                        color: activeGroups.isNotEmpty
-                            ? Colors.deepOrange
-                            : null,
-                      ),
-                      label: Text(
-                        activeGroups.isNotEmpty
-                            ? '홈 위젯 (${activeGroups.length})'
-                            : '홈 위젯',
-                        style: const TextStyle(fontSize: 12),
-                      ),
-                      label: Text(
-                      onPressed: () {
-                        HapticFeedback.selectionClick();
-                        setState(() {
-                          _showHomeWidgetPanel = !_showHomeWidgetPanel;
-                        });
-                      },
-                    ),
-                  ),
-                ],
-                */ //홈 위젯 //사용 안함
               ),
-              body: Column(
+              body: PageView(
+                controller: _pageController,
+                onPageChanged: (idx) {
+                  setState(() => _currentIndex = idx);
+                  if (idx == 1 || idx == 2) {
+                    _evaluateScheduleLifecycle();
+                  }
+                },
                 children: [
-                  if (_showHomeWidgetPanel)
-                    _buildHomeScreenWidgetCard(activeGroups),
-                  Expanded(
-                    child: PageView(
-                      controller: _pageController,
-                      onPageChanged: (idx) {
-                        setState(() => _currentIndex = idx);
-                        if (idx == 1) {
-                          _evaluateScheduleLifecycle();
-                        }
-                      },
-                      children: [
-                        CalendarScreen(
-                          schedules: _schedules,
-                          situations: _situations,
-                          showTips: _showTips,
-                          onScheduleSavedOrUpdated:
-                              _handleScheduleSavedOrUpdated,
-                          onSchedulesChanged: (updated) {
-                            setState(() => _schedules = List.from(updated));
-                            _storage.saveSchedules(_schedules);
-                            _evaluateScheduleLifecycle();
-                          },
-                          onSituationsChanged: (updated) {
-                            setState(() => _situations = List.from(updated));
-                            _storage.saveSituations(_situations);
-                            _evaluateScheduleLifecycle();
-                          },
-                        ),
-                        SituationScreen(
-                          situations: _situations,
-                          schedules: _schedules,
-                          showTips: _showTips,
-                          selectedSituationId: _selectedSituationId,
-                          onSelectedSituationChanged: (id) {
-                            setState(() => _selectedSituationId = id);
-                          },
-                          onSituationsChanged: (updated) {
-                            setState(() => _situations = List.from(updated));
-                            _storage.saveSituations(_situations);
-                            _evaluateScheduleLifecycle();
-                          },
-                          onSchedulesChanged: (updated) {
-                            setState(() => _schedules = List.from(updated));
-                            _storage.saveSchedules(_schedules);
-                            _evaluateScheduleLifecycle();
-                          },
-                        ),
-                        SettingsScreen(
-                          themeMode: _themeMode,
-                          seedColorValue: _seedColorValue,
-                          showTips: _showTips,
-                          autoResetOnScheduleTime: _autoResetOnScheduleTime,
-                          showHomeWidgetPanel: _showHomeWidgetPanel,
-                          onThemeModeChanged: (mode) {
-                            setState(() => _themeMode = mode);
-                            _storage.saveThemeMode(mode);
-                          },
-                          onSeedColorChanged: (colorVal) {
-                            setState(() => _seedColorValue = colorVal);
-                            _storage.saveSeedColor(colorVal);
-                          },
-                          onShowTipsChanged: (val) {
-                            setState(() => _showTips = val);
-                            _storage.saveShowTips(val);
-                          },
-                          onAutoResetChanged: (val) {
-                            setState(() => _autoResetOnScheduleTime = val);
-                            _storage.saveAutoResetOnScheduleTime(val);
-                          },
-                          onShowHomeWidgetPanelChanged: (val) {
-                            setState(() => _showHomeWidgetPanel = val);
-                          },
-                          onExportBackup: () => _storage.exportBackupJson(),
-                          onImportBackup: (rawJson) async {
-                            final ok = await _storage.importBackupJson(rawJson);
-                            if (ok) {
-                              await _loadInitialData();
-                            }
-                            return ok;
-                          },
-                          onResetData: () async {
-                            await _storage.resetAllData();
-                            await _loadInitialData();
-                          },
-                        ),
-                      ],
-                    ),
+                  // 0: 캘린더 탭
+                  CalendarScreen(
+                    schedules: _schedules,
+                    situations: _situations,
+                    todos: _todos,
+                    showTips: _showTips,
+                    onScheduleSavedOrUpdated: _handleScheduleSavedOrUpdated,
+                    onSchedulesChanged: (updated) {
+                      setState(() => _schedules = List.from(updated));
+                      _storage.saveSchedules(_schedules);
+                      _evaluateScheduleLifecycle();
+                    },
+                    onSituationsChanged: (updated) {
+                      setState(() => _situations = List.from(updated));
+                      _storage.saveSituations(_situations);
+                      _evaluateScheduleLifecycle();
+                    },
+                    onTodosChanged: (updated) {
+                      setState(() => _todos = List.from(updated));
+                      _storage.saveTodos(_todos);
+                    },
+                  ),
+                  // 1: 할 일 탭 (캘린더 - 상황 사이)
+                  TodoScreen(
+                    todos: _todos,
+                    showTips: _showTips,
+                    onTodosChanged: (updated) {
+                      setState(() => _todos = List.from(updated));
+                      _storage.saveTodos(_todos);
+                    },
+                  ),
+                  // 2: 상황·체크리스트 탭
+                  SituationScreen(
+                    situations: _situations,
+                    schedules: _schedules,
+                    showTips: _showTips,
+                    selectedSituationId: _selectedSituationId,
+                    onSelectedSituationChanged: (id) {
+                      setState(() => _selectedSituationId = id);
+                    },
+                    onSituationsChanged: (updated) {
+                      setState(() => _situations = List.from(updated));
+                      _storage.saveSituations(_situations);
+                      _evaluateScheduleLifecycle();
+                    },
+                    onSchedulesChanged: (updated) {
+                      setState(() => _schedules = List.from(updated));
+                      _storage.saveSchedules(_schedules);
+                      _evaluateScheduleLifecycle();
+                    },
+                  ),
+                  // 3: 설정 탭
+                  SettingsScreen(
+                    themeMode: _themeMode,
+                    seedColorValue: _seedColorValue,
+                    showTips: _showTips,
+                    autoResetOnScheduleTime: _autoResetOnScheduleTime,
+                    showHomeWidgetPanel: _showHomeWidgetPanel,
+                    onThemeModeChanged: (mode) {
+                      setState(() => _themeMode = mode);
+                      _storage.saveThemeMode(mode);
+                    },
+                    onSeedColorChanged: (colorVal) {
+                      setState(() => _seedColorValue = colorVal);
+                      _storage.saveSeedColor(colorVal);
+                    },
+                    onShowTipsChanged: (val) {
+                      setState(() => _showTips = val);
+                      _storage.saveShowTips(val);
+                    },
+                    onAutoResetChanged: (val) {
+                      setState(() => _autoResetOnScheduleTime = val);
+                      _storage.saveAutoResetOnScheduleTime(val);
+                    },
+                    onShowHomeWidgetPanelChanged: (val) {
+                      setState(() => _showHomeWidgetPanel = val);
+                    },
+                    onExportBackup: () => _storage.exportBackupJson(),
+                    onImportBackup: (rawJson) async {
+                      final ok = await _storage.importBackupJson(rawJson);
+                      if (ok) {
+                        await _loadInitialData();
+                      }
+                      return ok;
+                    },
+                    onResetData: () async {
+                      await _storage.resetAllData();
+                      await _loadInitialData();
+                    },
                   ),
                 ],
               ),
@@ -831,7 +579,7 @@ class _BygoAppState extends State<BygoApp> {
                 onDestinationSelected: (idx) {
                   HapticFeedback.selectionClick();
                   setState(() => _currentIndex = idx);
-                  if (idx == 1) {
+                  if (idx == 1 || idx == 2) {
                     _evaluateScheduleLifecycle();
                   }
                   _pageController.animateToPage(
@@ -845,6 +593,11 @@ class _BygoAppState extends State<BygoApp> {
                     icon: Icon(Icons.calendar_month_outlined),
                     selectedIcon: Icon(Icons.calendar_month),
                     label: '캘린더',
+                  ),
+                  NavigationDestination(
+                    icon: Icon(Icons.task_alt_outlined),
+                    selectedIcon: Icon(Icons.task_alt),
+                    label: '할 일',
                   ),
                   NavigationDestination(
                     icon: Icon(Icons.checklist_rtl_outlined),
