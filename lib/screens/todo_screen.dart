@@ -362,7 +362,7 @@ class _TodoScreenState extends State<TodoScreen> {
                       ),
                       const SizedBox(height: 16),
                       const Text(
-                        '세부 사항 (세부 사항을 모두 체크해도 할 일은 별도로 체크해야 합니다)',
+                        '세부 사항',
                         style: TextStyle(
                           fontSize: 12,
                           fontWeight: FontWeight.bold,

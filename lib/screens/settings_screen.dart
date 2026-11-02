@@ -55,6 +55,17 @@ class SettingsScreen extends StatelessWidget {
     MapEntry('핑크', Colors.pink.toARGB32()),
   ];
 
+  int get _selectedResetHour {
+    final parts = dailyResetTime.split(':');
+    return (int.tryParse(parts.firstOrNull ?? '0') ?? 0).clamp(0, 23);
+  }
+
+  String _formatHourLabel(int hour) {
+    if (hour == 0) return '0시 (자정)';
+    if (hour == 12) return '12시 (정오)';
+    return '$hour시';
+  }
+
   Future<void> _showExportDialog(BuildContext context) async {
     if (onExportBackup == null) return;
     HapticFeedback.selectionClick();
@@ -270,6 +281,8 @@ class SettingsScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final currentHour = _selectedResetHour;
+
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -383,14 +396,63 @@ class SettingsScreen extends StatelessWidget {
           ),
           child: Column(
             children: [
+              ListTile(
+                leading: Icon(
+                  Icons.schedule_outlined,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+                title: const Text(
+                  '하루 시작 시간 (일일 초기화 기준)',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                subtitle: const Text(
+                  '상황 체크리스트 일괄 리셋 및 반복 할 일의 다음 주기 복귀 시각에 공통 적용됩니다.',
+                ),
+                trailing: DropdownButtonHideUnderline(
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(
+                        color: Colors.grey.withValues(alpha: 0.4),
+                      ),
+                    ),
+                    child: DropdownButton<int>(
+                      value: currentHour,
+                      isDense: true,
+                      items: List.generate(24, (h) {
+                        return DropdownMenuItem<int>(
+                          value: h,
+                          child: Text(
+                            _formatHourLabel(h),
+                            style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        );
+                      }),
+                      onChanged: (selectedHour) {
+                        if (selectedHour == null) return;
+                        HapticFeedback.selectionClick();
+                        final formatted =
+                            '${selectedHour.toString().padLeft(2, '0')}:00';
+                        onDailyResetTimeChanged?.call(formatted);
+                      },
+                    ),
+                  ),
+                ),
+              ),
+              const Divider(height: 1),
               /*
               SwitchListTile(
                 title: Text(
-                  '매일 기준 시각($dailyResetTime)에 전체 상황 체크리스트 초기화',
+                  '하루 시작 시간(${_formatHourLabel(currentHour)})에 상황 체크리스트 자동 초기화',
                   style: const TextStyle(fontWeight: FontWeight.bold),
                 ),
                 subtitle: const Text(
-                  '일정 유무와 관계없이 매일 지정된 기준 시각이 지나면 모든 상황 체크리스트를 일괄 리셋합니다.',
+                  '일정 유무와 관계없이 매일 지정된 하루 시작 시간이 지나면 모든 상황 체크리스트를 일괄 리셋합니다.',
                 ),
                 value: autoResetDaily,
                 onChanged: (val) {

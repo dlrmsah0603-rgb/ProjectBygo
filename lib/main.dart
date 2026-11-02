@@ -47,7 +47,7 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
   bool _showTips = true;
   bool _autoResetOnScheduleTime = true;
 
-  // 일일 기준 시각(기본 '00:00') 상황 체크리스트 일괄 리셋 변수
+  // 하루 시작 시간(기본 '00:00') 상황 체크리스트 및 할 일 일일 리셋 기준
   bool _autoResetDaily = true;
   String _dailyResetTime = '00:00';
   String? _lastDailyResetKey;
@@ -79,7 +79,6 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // 앱이 백그라운드에 있다가 다시 포그라운드로 돌아왔을 때 기준 시각 경과 여부 즉시 점검
     if (state == AppLifecycleState.resumed && _isLoaded) {
       _evaluateScheduleLifecycle();
     }
@@ -99,8 +98,6 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
     final dailyResetTime = await _storage.loadDailyResetTime();
     var lastDailyResetKey = await _storage.loadLastDailyResetKey();
 
-    // 최초 설치/실행 시 기록된 키가 없다면 현재 가장 최근 기준 시각 키로 초기화하여
-    // 방금 켠 직후 불필요하게 리셋되지 않도록 기준점 세팅 (이미 기준 시각을 넘긴 다음 날 실행 시에는 정상 리셋됨)
     if (lastDailyResetKey == null) {
       final initThreshold =
           _getLatestDailyResetThreshold(DateTime.now(), dailyResetTime);
@@ -124,7 +121,6 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
       _isLoaded = true;
     });
 
-    // 앱 시작 시 기준 시각을 지나쳤는지 즉시 확인 후 리셋 실행
     _evaluateScheduleLifecycle();
     _startLifecycleTimer();
   }
@@ -139,7 +135,7 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
 
   DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
 
-  /// 현재 시각(now) 기준으로 가장 최근에 도달한 일일 초기화 기준 시각(DateTime) 반환
+  /// 현재 시각(now) 기준으로 가장 최근에 도달한 하루 시작 시각(DateTime) 반환
   DateTime _getLatestDailyResetThreshold(DateTime now, String resetTimeStr) {
     final parts = resetTimeStr.split(':');
     final h = (int.tryParse(parts.firstOrNull ?? '0') ?? 0).clamp(0, 23);
@@ -228,7 +224,7 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
     bool todosModified = false;
     final List<String> resetNoticeMessages = [];
 
-    // 1. 일일 기준 시각(기본 00:00) 경과 시 모든 상황 체크리스트 일괄 리셋 (알림 없음)
+    // 1. 하루 시작 시간(_dailyResetTime) 경과 시 모든 상황 체크리스트 일괄 리셋 (알림 없음)
     if (_autoResetDaily) {
       final latestThreshold =
           _getLatestDailyResetThreshold(now, _dailyResetTime);
@@ -249,9 +245,9 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
       }
     }
 
-    // 2. 완료된 반복 할 일(TodoItem) 자정 기준 자동 재활성화 (진행 중으로 복귀)
+    // 2. 완료된 반복 할 일(TodoItem)도 설정된 하루 시작 시간(_dailyResetTime) 기준으로 자동 재활성화
     for (final todo in _todos) {
-      if (todo.shouldReactivateAt(now)) {
+      if (todo.shouldReactivateAt(now, dailyResetTime: _dailyResetTime)) {
         todo.reactivateForNextCycle(now);
         todosModified = true;
       }
@@ -412,7 +408,7 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
               messenger.hideCurrentMaterialBanner();
               setState(() {
                 _selectedSituationId = situation.id;
-                _currentIndex = 2; // 상황·체크리스트 탭 인덱스 (캘린더:0, 할 일:1, 상황:2, 설정:3)
+                _currentIndex = 2;
               });
               _pageController.animateToPage(
                 2,
@@ -896,9 +892,20 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
                               _evaluateScheduleLifecycle();
                             }
                           },
-                          onDailyResetTimeChanged: (timeStr) {
-                            setState(() => _dailyResetTime = timeStr);
-                            _storage.saveDailyResetTime(timeStr);
+                          onDailyResetTimeChanged: (timeStr) async {
+                            final latestThreshold =
+                                _getLatestDailyResetThreshold(
+                              DateTime.now(),
+                              timeStr,
+                            );
+                            final newKey =
+                                _formatThresholdKey(latestThreshold);
+                            setState(() {
+                              _dailyResetTime = timeStr;
+                              _lastDailyResetKey = newKey;
+                            });
+                            await _storage.saveDailyResetTime(timeStr);
+                            await _storage.saveLastDailyResetKey(newKey);
                             _evaluateScheduleLifecycle();
                           },
                           onShowHomeWidgetPanelChanged: (val) {

@@ -53,7 +53,7 @@ class TodoSubItem {
     return TodoSubItem(
       id: (json['id'] as String?) ??
           DateTime.now().microsecondsSinceEpoch.toString(),
-      title: (json['title'] as String?) ?? '',
+      title: (json['title'] as String?) ?? (json['name'] as String?) ?? '',
       isChecked: (json['isChecked'] as bool?) ?? false,
     );
   }
@@ -76,7 +76,7 @@ class TodoItem {
   List<TodoSubItem> subItems;
   bool isCompleted;
   DateTime? completedAt;
-  DateTime? nextActivationDate; // 반복 할 일 완료 시 다음 주기에 진행 중으로 돌아올 날짜(자정 기준)
+  DateTime? nextActivationDate; // 반복 할 일 완료 시 다음 주기에 진행 중으로 돌아올 날짜
 
   TodoItem({
     required this.id,
@@ -93,8 +93,6 @@ class TodoItem {
   bool get isRepeating => repeatType != TodoRepeatType.none;
 
   /// 마감 기한이 지났는지 여부 (진행 중인 할 일만 해당)
-  /// - 시간이 지정된 경우: 해당 날짜+시간이 현재 시각보다 이전이면 기한 지남
-  /// - 날짜만 지정된 경우: 해당 날짜가 오늘(자정)보다 이전이면 기한 지남
   bool isOverdueAt(DateTime now) {
     if (isCompleted || dueDate == null) return false;
     final today = DateTime(now.year, now.month, now.day);
@@ -151,7 +149,6 @@ class TodoItem {
             ? DateTime(dueDate!.year, dueDate!.month, dueDate!.day)
             : today;
         DateTime nextDate = calculateNextCycleDate(base);
-        // 만약 이미 지난 기한의 반복 할 일을 뒤늦게 완료했다면, 최소 내일 자정 이후에 깨어나도록 보정
         while (!nextDate.isAfter(today)) {
           nextDate = calculateNextCycleDate(nextDate);
         }
@@ -165,64 +162,58 @@ class TodoItem {
     }
   }
 
-  /// B안: 완료된 반복 할 일이 다음 주기 날짜(자정)에 도달했는지 확인하고,
-  /// 도달했다면 다시 [진행 중] 상태로 전환하며 마감 기한과 세부 사항 체크를 리셋
-  bool checkAndReactivateIfDue(DateTime now) {
+  /// 완료된 반복 할 일이 다음 주기 날짜의 '하루 시작 시간(dailyResetTime)'에 도달했는지 확인
+  bool shouldReactivateAt(DateTime now, {String dailyResetTime = '00:00'}) {
     if (!isCompleted || !isRepeating || nextActivationDate == null) {
       return false;
     }
-    final today = DateTime(now.year, now.month, now.day);
-    final target = DateTime(
+    final parts = dailyResetTime.split(':');
+    final resetHour =
+        (int.tryParse(parts.firstOrNull ?? '0') ?? 0).clamp(0, 23);
+    final resetMinute =
+        (int.tryParse(parts.length > 1 ? parts[1] : '0') ?? 0).clamp(0, 59);
+
+    final targetDateTime = DateTime(
       nextActivationDate!.year,
       nextActivationDate!.month,
       nextActivationDate!.day,
+      resetHour,
+      resetMinute,
     );
 
-    if (!today.isBefore(target)) {
-      isCompleted = false;
-      completedAt = null;
-      if (dueDate != null) {
-        dueDate = target;
-      }
-      nextActivationDate = null;
-      for (final sub in subItems) {
-        sub.isChecked = false;
-      }
-      return true;
-    }
-    return false;
-  }
-
-  /// 완료된 반복 할 일이 다음 주기 날짜(자정)에 도달했는지 확인
-  bool shouldReactivateAt(DateTime now) {
-    if (!isCompleted || !isRepeating || nextActivationDate == null) {
-      return false;
-    }
-    final today = DateTime(now.year, now.month, now.day);
-    final target = DateTime(
-      nextActivationDate!.year,
-      nextActivationDate!.month,
-      nextActivationDate!.day,
-    );
-
-    return !today.isBefore(target); // 오늘이 다음 활성화 날짜(target)와 같거나 지났으면 true
+    return !now.isBefore(targetDateTime);
   }
 
   /// 다음 주기로 업데이트하고 다시 [진행 중] 상태로 되돌리기
   void reactivateForNextCycle(DateTime now) {
     if (nextActivationDate == null) return;
-    
+
     isCompleted = false;
     completedAt = null;
     if (dueDate != null) {
-      dueDate = nextActivationDate;
+      dueDate = DateTime(
+        nextActivationDate!.year,
+        nextActivationDate!.month,
+        nextActivationDate!.day,
+      );
     }
     nextActivationDate = null;
-    
-    // 세부 사항 체크리스트 리셋
+
     for (final sub in subItems) {
       sub.isChecked = false;
     }
+  }
+
+  /// 기존 호출부와도 호환되는 헬퍼 메서드
+  bool checkAndReactivateIfDue(
+    DateTime now, {
+    String dailyResetTime = '00:00',
+  }) {
+    if (shouldReactivateAt(now, dailyResetTime: dailyResetTime)) {
+      reactivateForNextCycle(now);
+      return true;
+    }
+    return false;
   }
 
   TodoItem copyWith({
