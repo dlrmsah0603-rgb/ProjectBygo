@@ -193,6 +193,38 @@ class TodoItem {
     return false;
   }
 
+  /// 완료된 반복 할 일이 다음 주기 날짜(자정)에 도달했는지 확인
+  bool shouldReactivateAt(DateTime now) {
+    if (!isCompleted || !isRepeating || nextActivationDate == null) {
+      return false;
+    }
+    final today = DateTime(now.year, now.month, now.day);
+    final target = DateTime(
+      nextActivationDate!.year,
+      nextActivationDate!.month,
+      nextActivationDate!.day,
+    );
+
+    return !today.isBefore(target); // 오늘이 다음 활성화 날짜(target)와 같거나 지났으면 true
+  }
+
+  /// 다음 주기로 업데이트하고 다시 [진행 중] 상태로 되돌리기
+  void reactivateForNextCycle(DateTime now) {
+    if (nextActivationDate == null) return;
+    
+    isCompleted = false;
+    completedAt = null;
+    if (dueDate != null) {
+      dueDate = nextActivationDate;
+    }
+    nextActivationDate = null;
+    
+    // 세부 사항 체크리스트 리셋
+    for (final sub in subItems) {
+      sub.isChecked = false;
+    }
+  }
+
   TodoItem copyWith({
     String? id,
     String? title,

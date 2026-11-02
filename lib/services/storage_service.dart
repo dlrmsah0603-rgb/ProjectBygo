@@ -15,6 +15,12 @@ class StorageService {
   static const String _keyShowTips = 'show_tips';
   static const String _keyAutoResetOnTime = 'auto_reset_on_schedule_time';
   static const String _keyResetExecutedKeys = 'bygo_reset_executed_keys';
+
+  // 일일 기준 시각(기본 00:00) 상황 체크리스트 일괄 리셋 관련 키
+  static const String _keyAutoResetDaily = 'bygo_auto_reset_daily';
+  static const String _keyDailyResetTime = 'bygo_daily_reset_time';
+  static const String _keyLastDailyResetKey = 'bygo_last_daily_reset_key';
+
   static const String _keyWidgetPayload = 'bygo_home_widget_payload';
   static const String _keyWidgetDisplayText = 'bygo_home_widget_text';
 
@@ -72,35 +78,6 @@ class StorageService {
     } catch (_) {}
   }
 
-  // --- 2-2. 할 일(Todos) 저장 및 불러오기 ---
-  Future<List<TodoItem>> loadTodos() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getString(_keyTodos);
-      if (raw == null || raw.isEmpty) return [];
-
-      final decoded = jsonDecode(raw);
-      if (decoded is List) {
-        return decoded
-            .map(
-              (item) => TodoItem.fromJson(
-                Map<String, dynamic>.from(item as Map),
-              ),
-            )
-            .toList();
-      }
-    } catch (_) {}
-    return [];
-  }
-
-  Future<void> saveTodos(List<TodoItem> todos) async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      final encoded = jsonEncode(todos.map((t) => t.toJson()).toList());
-      await prefs.setString(_keyTodos, encoded);
-    } catch (_) {}
-  }
-
   List<Situation> _defaultSituations() {
     return [
       Situation(
@@ -132,7 +109,36 @@ class StorageService {
     ];
   }
 
-  // --- 3. 테마 모드(ThemeMode) 설정 ---
+  // --- 3. 할 일(Todos) 저장 및 불러오기 ---
+  Future<List<TodoItem>> loadTodos() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_keyTodos);
+      if (raw == null || raw.isEmpty) return [];
+
+      final decoded = jsonDecode(raw);
+      if (decoded is List) {
+        return decoded
+            .map(
+              (item) => TodoItem.fromJson(
+                Map<String, dynamic>.from(item as Map),
+              ),
+            )
+            .toList();
+      }
+    } catch (_) {}
+    return [];
+  }
+
+  Future<void> saveTodos(List<TodoItem> todos) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final encoded = jsonEncode(todos.map((t) => t.toJson()).toList());
+      await prefs.setString(_keyTodos, encoded);
+    } catch (_) {}
+  }
+
+  // --- 4. 테마 모드(ThemeMode) 설정 ---
   Future<ThemeMode> loadThemeMode() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -160,7 +166,7 @@ class StorageService {
     } catch (_) {}
   }
 
-  // --- 4. 테마 대표 색상(Seed Color) 설정 ---
+  // --- 5. 테마 대표 색상(Seed Color) 설정 ---
   Future<int> loadSeedColor() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -177,7 +183,7 @@ class StorageService {
     } catch (_) {}
   }
 
-  // --- 5. 사용 팁 표시 여부 설정 ---
+  // --- 6. 사용 팁 표시 여부 설정 ---
   Future<bool> loadShowTips() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -194,7 +200,7 @@ class StorageService {
     } catch (_) {}
   }
 
-  // --- 6. 일정 시간 정각 체크리스트 자동 초기화 설정 및 이력 ---
+  // --- 7. 일정 시간 정각 체크리스트 자동 초기화 설정 및 이력 ---
   Future<bool> loadAutoResetOnScheduleTime() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -230,7 +236,58 @@ class StorageService {
     } catch (_) {}
   }
 
-  // --- 7. 홈 화면 위젯 상태 동기화 ---
+  // --- 8. 일일 기준 시각(자정 등) 상황 체크리스트 일괄 리셋 설정 및 이력 ---
+  Future<bool> loadAutoResetDaily() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      return prefs.getBool(_keyAutoResetDaily) ?? true;
+    } catch (_) {
+      return true;
+    }
+  }
+
+  Future<void> saveAutoResetDaily(bool enabled) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_keyAutoResetDaily, enabled);
+    } catch (_) {}
+  }
+
+  Future<String> loadDailyResetTime() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getString(_keyDailyResetTime);
+      if (saved != null && saved.contains(':')) {
+        return saved;
+      }
+    } catch (_) {}
+    return '00:00';
+  }
+
+  Future<void> saveDailyResetTime(String timeStr) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_keyDailyResetTime, timeStr);
+    } catch (_) {}
+  }
+
+  Future<String?> loadLastDailyResetKey() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      return prefs.getString(_keyLastDailyResetKey);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> saveLastDailyResetKey(String resetKey) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_keyLastDailyResetKey, resetKey);
+    } catch (_) {}
+  }
+
+  // --- 9. 홈 화면 위젯 상태 동기화 ---
   Future<void> syncHomeWidgetData({
     required bool hasActivePrepSchedule,
     required String summaryText,
@@ -260,7 +317,7 @@ class StorageService {
     } catch (_) {}
   }
 
-  // --- 8. 백업(JSON 내보내기) 및 불러오기(JSON 복원) ---
+  // --- 10. 백업(JSON 내보내기) 및 불러오기(JSON 복원) ---
   Future<String> exportBackupJson() async {
     final schedules = await loadSchedules();
     final situations = await loadSituations();
@@ -269,6 +326,8 @@ class StorageService {
     final seedColor = await loadSeedColor();
     final showTips = await loadShowTips();
     final autoReset = await loadAutoResetOnScheduleTime();
+    final autoResetDaily = await loadAutoResetDaily();
+    final dailyResetTime = await loadDailyResetTime();
 
     final backupData = {
       'version': 2,
@@ -282,6 +341,8 @@ class StorageService {
       'seedColor': seedColor,
       'showTips': showTips,
       'autoResetOnScheduleTime': autoReset,
+      'autoResetDaily': autoResetDaily,
+      'dailyResetTime': dailyResetTime,
     };
 
     return const JsonEncoder.withIndent('  ').convert(backupData);
@@ -315,9 +376,7 @@ class StorageService {
 
       if (hasTodos) {
         final todos = (decoded['todos'] as List)
-            .map(
-              (e) => TodoItem.fromJson(Map<String, dynamic>.from(e as Map)),
-            )
+            .map((e) => TodoItem.fromJson(Map<String, dynamic>.from(e as Map)))
             .toList();
         await saveTodos(todos);
       }
@@ -344,13 +403,21 @@ class StorageService {
         );
       }
 
+      if (decoded['autoResetDaily'] is bool) {
+        await saveAutoResetDaily(decoded['autoResetDaily'] as bool);
+      }
+
+      if (decoded['dailyResetTime'] is String) {
+        await saveDailyResetTime(decoded['dailyResetTime'] as String);
+      }
+
       return true;
     } catch (_) {
       return false;
     }
   }
 
-  // --- 9. 전체 데이터 초기화 ---
+  // --- 11. 전체 데이터 초기화 ---
   Future<void> resetAllData() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -358,6 +425,7 @@ class StorageService {
       await prefs.remove(_keySituations);
       await prefs.remove(_keyTodos);
       await prefs.remove(_keyResetExecutedKeys);
+      await prefs.remove(_keyLastDailyResetKey);
     } catch (_) {}
   }
 }

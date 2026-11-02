@@ -6,11 +6,15 @@ class SettingsScreen extends StatelessWidget {
   final int seedColorValue;
   final bool showTips;
   final bool autoResetOnScheduleTime;
+  final bool autoResetDaily;
+  final String dailyResetTime;
   final bool showHomeWidgetPanel;
   final ValueChanged<ThemeMode> onThemeModeChanged;
   final ValueChanged<int> onSeedColorChanged;
   final ValueChanged<bool> onShowTipsChanged;
   final ValueChanged<bool>? onAutoResetChanged;
+  final ValueChanged<bool>? onAutoResetDailyChanged;
+  final ValueChanged<String>? onDailyResetTimeChanged;
   final ValueChanged<bool>? onShowHomeWidgetPanelChanged;
   final Future<String> Function()? onExportBackup;
   final Future<bool> Function(String jsonText)? onImportBackup;
@@ -22,11 +26,15 @@ class SettingsScreen extends StatelessWidget {
     required this.seedColorValue,
     this.showTips = true,
     this.autoResetOnScheduleTime = true,
+    this.autoResetDaily = true,
+    this.dailyResetTime = '00:00',
     this.showHomeWidgetPanel = false,
     required this.onThemeModeChanged,
     required this.onSeedColorChanged,
     required this.onShowTipsChanged,
     this.onAutoResetChanged,
+    this.onAutoResetDailyChanged,
+    this.onDailyResetTimeChanged,
     this.onShowHomeWidgetPanelChanged,
     this.onExportBackup,
     this.onImportBackup,
@@ -168,7 +176,7 @@ class SettingsScreen extends StatelessWidget {
                 controller: controller,
                 maxLines: 7,
                 decoration: const InputDecoration(
-                  hintText: '{\n  "version": 1,\n  "schedules": [...]\n}',
+                  hintText: '{\n  "version": 2,\n  "schedules": [...]\n}',
                   border: OutlineInputBorder(),
                 ),
                 style: const TextStyle(
@@ -230,7 +238,7 @@ class SettingsScreen extends StatelessWidget {
       builder: (ctx) => AlertDialog(
         title: const Text('전체 데이터 초기화'),
         content: const Text(
-          '저장된 모든 일정과 외출 상황·체크리스트를 초기 기본 상태로 되돌리시겠습니까?\n(필요한 경우 먼저 데이터 백업을 진행해 주세요.)',
+          '저장된 모든 일정, 할 일, 외출 상황·체크리스트를 초기 기본 상태로 되돌리시겠습니까?\n(필요한 경우 먼저 데이터 백업을 진행해 주세요.)',
         ),
         actions: [
           TextButton(
@@ -376,6 +384,51 @@ class SettingsScreen extends StatelessWidget {
           child: Column(
             children: [
               SwitchListTile(
+                title: Text(
+                  '매일 기준 시각($dailyResetTime)에 전체 상황 체크리스트 초기화',
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+                subtitle: const Text(
+                  '일정 유무와 관계없이 매일 지정된 기준 시각이 지나면 모든 상황 체크리스트를 일괄 리셋합니다.',
+                ),
+                value: autoResetDaily,
+                onChanged: (val) {
+                  HapticFeedback.selectionClick();
+                  onAutoResetDailyChanged?.call(val);
+                },
+              ),
+              const Divider(height: 1),
+              SwitchListTile(
+                title: const Text(
+                  '일정 시간 정각에 체크리스트 자동 초기화',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                subtitle: const Text(
+                  '해당 일정 시간이 되면 체크 여부에 관계없이 연결된 체크리스트를 초기 상태로 리셋합니다.',
+                ),
+                value: autoResetOnScheduleTime,
+                onChanged: (val) {
+                  HapticFeedback.selectionClick();
+                  onAutoResetChanged?.call(val);
+                },
+              ),
+              const Divider(height: 1),
+              SwitchListTile(
+                title: const Text(
+                  '홈 화면 위젯 패널 표시',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                subtitle: const Text(
+                  '준비시간 ~ 일정 시간 내의 공유 체크리스트 위젯을 화면 상단에 고정 표시합니다.',
+                ),
+                value: showHomeWidgetPanel,
+                onChanged: (val) {
+                  HapticFeedback.selectionClick();
+                  onShowHomeWidgetPanelChanged?.call(val);
+                },
+              ),
+              const Divider(height: 1),
+              SwitchListTile(
                 title: const Text(
                   '화면 상단 사용 팁 표시',
                   style: TextStyle(fontWeight: FontWeight.bold),
@@ -421,7 +474,7 @@ class SettingsScreen extends StatelessWidget {
                     style: TextStyle(fontWeight: FontWeight.w600),
                   ),
                   subtitle: const Text(
-                    '현재 일정과 체크리스트 데이터를 JSON 코드로 클립보드에 복사합니다.',
+                    '현재 일정, 할 일, 체크리스트 데이터를 JSON 코드로 클립보드에 복사합니다.',
                   ),
                   onTap: () => _showExportDialog(context),
                 ),
@@ -437,7 +490,7 @@ class SettingsScreen extends StatelessWidget {
                     style: TextStyle(fontWeight: FontWeight.w600),
                   ),
                   subtitle: const Text(
-                    '백업해 둔 JSON 코드를 붙여넣어 일정과 체크리스트를 복구합니다.',
+                    '백업해 둔 JSON 코드를 붙여넣어 데이터를 복구합니다.',
                   ),
                   onTap: () => _showImportDialog(context),
                 ),
@@ -450,7 +503,7 @@ class SettingsScreen extends StatelessWidget {
                     color: Colors.redAccent,
                   ),
                   title: const Text(
-                    '전체 일정 및 체크리스트 초기화',
+                    '전체 일정·할 일·체크리스트 초기화',
                     style: TextStyle(
                       color: Colors.redAccent,
                       fontWeight: FontWeight.bold,
