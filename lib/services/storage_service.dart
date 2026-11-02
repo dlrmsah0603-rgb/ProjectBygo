@@ -1,6 +1,9 @@
 import 'dart:convert';
+import 'dart:io';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/schedule_model.dart';
 import '../models/situation_model.dart';
@@ -37,7 +40,11 @@ class StorageService {
       final decoded = jsonDecode(raw);
       if (decoded is List) {
         return decoded
-            .map((item) => Schedule.fromJson(item as Map<String, dynamic>))
+            .map(
+              (item) => Schedule.fromJson(
+                Map<String, dynamic>.from(item as Map),
+              ),
+            )
             .toList();
       }
     } catch (_) {}
@@ -62,7 +69,11 @@ class StorageService {
       final decoded = jsonDecode(raw);
       if (decoded is List) {
         final list = decoded
-            .map((item) => Situation.fromJson(item as Map<String, dynamic>))
+            .map(
+              (item) => Situation.fromJson(
+                Map<String, dynamic>.from(item as Map),
+              ),
+            )
             .toList();
         return list.isNotEmpty ? list : _defaultSituations();
       }
@@ -83,7 +94,6 @@ class StorageService {
       Situation(
         id: 'default_work',
         name: '출근',
-        tag: '출근',
         iconCodePoint: Icons.work.codePoint,
         colorValue: Colors.blue.toARGB32(),
         items: [
@@ -96,7 +106,6 @@ class StorageService {
       Situation(
         id: 'default_gym',
         name: '운동',
-        tag: '운동',
         iconCodePoint: Icons.fitness_center.codePoint,
         colorValue: Colors.orange.toARGB32(),
         items: [
@@ -317,7 +326,7 @@ class StorageService {
     } catch (_) {}
   }
 
-  // --- 10. 백업(JSON 내보내기) 및 불러오기(JSON 복원) ---
+  // --- 10. 백업(JSON 파일 저장) 및 불러오기(JSON 파일 선택 복원) ---
   Future<String> exportBackupJson() async {
     final schedules = await loadSchedules();
     final situations = await loadSituations();
@@ -330,7 +339,7 @@ class StorageService {
     final dailyResetTime = await loadDailyResetTime();
 
     final backupData = {
-      'version': 2,
+      'version': 3,
       'exportedAt': DateTime.now().toIso8601String(),
       'schedules': schedules.map((s) => s.toJson()).toList(),
       'situations': situations.map((s) => s.toJson()).toList(),
@@ -346,6 +355,92 @@ class StorageService {
     };
 
     return const JsonEncoder.withIndent('  ').convert(backupData);
+  }
+
+  /// 기기의 기본 다운로드 폴더를 찾아 백업 JSON 파일을 즉시 저장하고 저장된 파일 경로를 반환
+  Future<String> exportBackupToDownloadFolder() async {
+    final jsonString = await exportBackupJson();
+    final bytes = utf8.encode(jsonString);
+
+    final now = DateTime.now();
+    final stamp =
+        '${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}_${now.hour.toString().padLeft(2, '0')}${now.minute.toString().padLeft(2, '0')}${now.second.toString().padLeft(2, '0')}';
+    final fileName = 'bygo_backup_$stamp.json';
+
+    Directory? targetDir;
+
+    if (Platform.isAndroid) {
+      final androidDownload = Directory('/storage/emulated/0/Download');
+      if (await androidDownload.exists()) {
+        targetDir = androidDownload;
+      }
+    }
+
+    if (targetDir == null) {
+      try {
+        targetDir = await getDownloadsDirectory();
+      } catch (_) {}
+    }
+
+    targetDir ??= await getApplicationDocumentsDirectory();
+
+    final sep = Platform.pathSeparator;
+    final cleanDirPath = targetDir.path.endsWith(sep)
+        ? targetDir.path.substring(0, targetDir.path.length - 1)
+        : targetDir.path;
+    final fullPath = '$cleanDirPath$sep$fileName';
+
+    try {
+      final file = File(fullPath);
+      await file.writeAsBytes(bytes, flush: true);
+      return file.path;
+    } catch (_) {
+      // Android 11+ Scoped Storage 권한 제약 등으로 직접 쓰기 실패 시 시스템 저장 다이얼로그로 폴백
+      final savedPath = await FilePicker.platform.saveFile(
+        dialogTitle: '백업 파일 저장',
+        fileName: fileName,
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+        bytes: Uint8List.fromList(bytes),
+      );
+      if (savedPath == null) {
+        throw Exception('백업 파일 저장이 취소되었습니다.');
+      }
+      if (Platform.isWindows || Platform.isMacOS || Platform.isLinux) {
+        final f = File(savedPath);
+        await f.writeAsBytes(bytes, flush: true);
+      }
+      return savedPath;
+    }
+  }
+
+  /// 파일 탐색기(FilePicker)에서 백업 JSON 파일을 선택하여 데이터 복원
+  /// 반환값: true(성공), false(데이터 형식 오류), null(사용자가 파일 선택 취소)
+  Future<bool?> importBackupFromFilePicker() async {
+    final result = await FilePicker.platform.pickFiles(
+      dialogTitle: '복원할 Bygo 백업 JSON 파일 선택',
+      type: FileType.custom,
+      allowedExtensions: ['json'],
+      withData: true,
+    );
+
+    if (result == null || result.files.isEmpty) {
+      return null; // 사용자가 취소함
+    }
+
+    final picked = result.files.single;
+    String rawJson;
+
+    if (picked.path != null) {
+      final file = File(picked.path!);
+      rawJson = await file.readAsString(encoding: utf8);
+    } else if (picked.bytes != null) {
+      rawJson = utf8.decode(picked.bytes!);
+    } else {
+      return false;
+    }
+
+    return await importBackupJson(rawJson);
   }
 
   Future<bool> importBackupJson(String rawJson) async {

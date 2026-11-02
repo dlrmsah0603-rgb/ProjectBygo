@@ -17,7 +17,7 @@ class SettingsScreen extends StatelessWidget {
   final ValueChanged<String>? onDailyResetTimeChanged;
   final ValueChanged<bool>? onShowHomeWidgetPanelChanged;
   final Future<String> Function()? onExportBackup;
-  final Future<bool> Function(String jsonText)? onImportBackup;
+  final Future<bool?> Function()? onImportBackup;
   final VoidCallback? onResetData;
 
   const SettingsScreen({
@@ -66,179 +66,75 @@ class SettingsScreen extends StatelessWidget {
     return '$hour시';
   }
 
-  Future<void> _showExportDialog(BuildContext context) async {
+  Future<void> _handleExportBackupFile(BuildContext context) async {
     if (onExportBackup == null) return;
     HapticFeedback.selectionClick();
-    final jsonText = await onExportBackup!();
-    await Clipboard.setData(ClipboardData(text: jsonText));
 
-    if (!context.mounted) return;
-    ScaffoldMessenger.of(context).clearSnackBars();
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('백업 데이터가 클립보드에 복사되었습니다.'),
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
-
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('데이터 백업 (내보내기)'),
-        content: SizedBox(
-          width: 420,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                '아래 JSON 백업 코드가 클립보드에 복사되었습니다. 메모장이나 안전한 곳에 보관해 주세요.',
-                style: TextStyle(fontSize: 13),
-              ),
-              const SizedBox(height: 12),
-              ConstrainedBox(
-                constraints: const BoxConstraints(maxHeight: 220),
-                child: Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: Colors.grey.withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
-                      color: Colors.grey.withValues(alpha: 0.3),
-                    ),
-                  ),
-                  child: SingleChildScrollView(
-                    child: SelectableText(
-                      jsonText,
-                      style: const TextStyle(
-                        fontSize: 11.5,
-                        fontFamily: 'monospace',
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
+    try {
+      final savedPath = await onExportBackup!();
+      if (!context.mounted) return;
+      HapticFeedback.heavyImpact();
+      ScaffoldMessenger.of(context).clearSnackBars();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('다운로드 폴더에 백업 파일이 저장되었습니다.\n($savedPath)'),
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 4),
         ),
-        actions: [
-          TextButton.icon(
-            onPressed: () async {
-              await Clipboard.setData(ClipboardData(text: jsonText));
-              if (!ctx.mounted) return;
-              HapticFeedback.lightImpact();
-              Navigator.pop(ctx);
-              ScaffoldMessenger.of(context).clearSnackBars();
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('백업 데이터가 다시 복사되었습니다.'),
-                  behavior: SnackBarBehavior.floating,
-                ),
-              );
-            },
-            icon: const Icon(Icons.copy, size: 18),
-            label: const Text('다시 복사'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('닫기'),
-          ),
-        ],
-      ),
-    );
+      );
+    } catch (e) {
+      if (!context.mounted) return;
+      HapticFeedback.vibrate();
+      ScaffoldMessenger.of(context).clearSnackBars();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('백업 파일 저장 실패: $e'),
+          backgroundColor: Colors.redAccent,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
   }
 
-  Future<void> _showImportDialog(BuildContext context) async {
+  Future<void> _handleImportBackupFile(BuildContext context) async {
     if (onImportBackup == null) return;
     HapticFeedback.selectionClick();
-    final controller = TextEditingController();
 
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('데이터 불러오기 (복원)'),
-        content: SizedBox(
-          width: 420,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                '백업해 둔 JSON 데이터를 아래에 붙여넣고 [복원하기]를 눌러주세요.',
-                style: TextStyle(fontSize: 13),
-              ),
-              const SizedBox(height: 8),
-              Align(
-                alignment: Alignment.centerRight,
-                child: TextButton.icon(
-                  onPressed: () async {
-                    final clip = await Clipboard.getData(Clipboard.kTextPlain);
-                    if (clip?.text != null) {
-                      controller.text = clip!.text!;
-                      HapticFeedback.selectionClick();
-                    }
-                  },
-                  icon: const Icon(Icons.paste, size: 16),
-                  label: const Text('클립보드에서 붙여넣기'),
-                ),
-              ),
-              TextField(
-                controller: controller,
-                maxLines: 7,
-                decoration: const InputDecoration(
-                  hintText: '{\n  "version": 2,\n  "schedules": [...]\n}',
-                  border: OutlineInputBorder(),
-                ),
-                style: const TextStyle(
-                  fontSize: 12,
-                  fontFamily: 'monospace',
-                ),
-              ),
-            ],
+    try {
+      final result = await onImportBackup!();
+      if (result == null || !context.mounted) return; // 사용자가 파일 선택 취소
+
+      ScaffoldMessenger.of(context).clearSnackBars();
+      if (result) {
+        HapticFeedback.heavyImpact();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('백업 파일에서 데이터를 성공적으로 복원했습니다! 🎉'),
+            behavior: SnackBarBehavior.floating,
           ),
+        );
+      } else {
+        HapticFeedback.vibrate();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('올바른 백업 파일 형식이 아닙니다. 다시 확인해 주세요.'),
+            backgroundColor: Colors.redAccent,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e) {
+      if (!context.mounted) return;
+      HapticFeedback.vibrate();
+      ScaffoldMessenger.of(context).clearSnackBars();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('파일 불러오기 실패: $e'),
+          backgroundColor: Colors.redAccent,
+          behavior: SnackBarBehavior.floating,
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('취소'),
-          ),
-          FilledButton.icon(
-            onPressed: () async {
-              final raw = controller.text.trim();
-              if (raw.isEmpty) return;
-
-              final success = await onImportBackup!(raw);
-              if (!ctx.mounted) return;
-              Navigator.pop(ctx);
-
-              if (!context.mounted) return;
-              ScaffoldMessenger.of(context).clearSnackBars();
-              if (success) {
-                HapticFeedback.heavyImpact();
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('백업 데이터를 성공적으로 불러왔습니다! 🎉'),
-                    behavior: SnackBarBehavior.floating,
-                  ),
-                );
-              } else {
-                HapticFeedback.vibrate();
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('올바른 백업 데이터 형식이 아닙니다. 다시 확인해 주세요.'),
-                    backgroundColor: Colors.redAccent,
-                    behavior: SnackBarBehavior.floating,
-                  ),
-                );
-              }
-            },
-            icon: const Icon(Icons.restore, size: 18),
-            label: const Text('복원하기'),
-          ),
-        ],
-      ),
-    );
+      );
+    }
   }
 
   void _confirmResetDialog(BuildContext context) {
@@ -530,33 +426,33 @@ class SettingsScreen extends StatelessWidget {
               if (onExportBackup != null)
                 ListTile(
                   leading: Icon(
-                    Icons.upload_file_outlined,
+                    Icons.download_outlined,
                     color: Theme.of(context).colorScheme.primary,
                   ),
                   title: const Text(
-                    '데이터 백업 (내보내기)',
+                    '데이터 백업 (파일로 저장)',
                     style: TextStyle(fontWeight: FontWeight.w600),
                   ),
                   subtitle: const Text(
-                    '현재 일정, 할 일, 체크리스트 데이터를 JSON 코드로 클립보드에 복사합니다.',
+                    '현재 일정, 할 일, 체크리스트 데이터를 기본 다운로드 폴더에 JSON 파일로 저장합니다.',
                   ),
-                  onTap: () => _showExportDialog(context),
+                  onTap: () => _handleExportBackupFile(context),
                 ),
               if (onImportBackup != null) ...[
                 const Divider(height: 1),
                 ListTile(
                   leading: Icon(
-                    Icons.download_for_offline_outlined,
+                    Icons.folder_open_outlined,
                     color: Theme.of(context).colorScheme.primary,
                   ),
                   title: const Text(
-                    '데이터 불러오기 (복원)',
+                    '데이터 불러오기 (파일에서 복원)',
                     style: TextStyle(fontWeight: FontWeight.w600),
                   ),
                   subtitle: const Text(
-                    '백업해 둔 JSON 코드를 붙여넣어 데이터를 복구합니다.',
+                    '저장해 둔 백업 JSON 파일을 선택하여 데이터를 복구합니다.',
                   ),
-                  onTap: () => _showImportDialog(context),
+                  onTap: () => _handleImportBackupFile(context),
                 ),
               ],
               if (onResetData != null) ...[

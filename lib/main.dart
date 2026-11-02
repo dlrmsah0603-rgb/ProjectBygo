@@ -591,13 +591,15 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
                           onShowHomeWidgetPanelChanged: (val) {
                             setState(() => _showHomeWidgetPanel = val);
                           },
-                          onExportBackup: () => _storage.exportBackupJson(),
-                          onImportBackup: (rawJson) async {
-                            final ok = await _storage.importBackupJson(rawJson);
-                            if (ok) {
+                          onExportBackup: () =>
+                              _storage.exportBackupToDownloadFolder(),
+                          onImportBackup: () async {
+                            final result =
+                                await _storage.importBackupFromFilePicker();
+                            if (result == true) {
                               await _loadInitialData();
                             }
-                            return ok;
+                            return result;
                           },
                           onResetData: () async {
                             await _storage.resetAllData();
