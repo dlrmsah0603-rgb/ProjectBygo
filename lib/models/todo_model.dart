@@ -97,6 +97,7 @@ class TodoItem {
   DateTime? completedAt;
   DateTime? nextActivationDate; // 완료 시 계산된 다음 주기 활성화 예정일
   List<TodoSubItem> subItems;
+  int? reminderMinutesBefore; // 마감 전 사전 알림 시간(분)
 
   // --- 구글 태스크 양방향 동기화 필드 ---
   String? googleTaskId;
@@ -119,6 +120,7 @@ class TodoItem {
     this.completedAt,
     this.nextActivationDate,
     List<TodoSubItem>? subItems,
+    this.reminderMinutesBefore,
     this.googleTaskId,
     DateTime? lastEditedTime,
     this.isDeleted = false,
@@ -131,6 +133,29 @@ class TodoItem {
         subItems = subItems ?? [],
         lastEditedTime = lastEditedTime ?? DateTime.now();
 
+  bool get hasReminder =>
+      reminderMinutesBefore != null && reminderMinutesBefore! > 0;
+
+  DateTime? get reminderDateTime {
+    if (dueDate == null || dueTime == null || !hasReminder) return null;
+    final parts = dueTime!.split(':');
+    final hh = parts.isNotEmpty ? (int.tryParse(parts[0]) ?? 0) : 0;
+    final mm = parts.length > 1 ? (int.tryParse(parts[1]) ?? 0) : 0;
+    final fullDt =
+        DateTime(dueDate!.year, dueDate!.month, dueDate!.day, hh, mm);
+    return fullDt.subtract(Duration(minutes: reminderMinutesBefore!));
+  }
+
+  String? get reminderSummaryText {
+    if (!hasReminder) return null;
+    final mins = reminderMinutesBefore!;
+    if (mins % 60 == 0) {
+      return '${mins ~/ 60}시간 전';
+    } else if (mins > 60) {
+      return '${mins ~/ 60}시간 ${mins % 60}분 전';
+    }
+    return '$mins분 전';
+  }
   bool get isRepeating => repeatType != TodoRepeatType.none;
   bool get hasSubItems => subItems.isNotEmpty;
   int get checkedSubItemsCount => subItems.where((i) => i.isChecked).length;
@@ -167,6 +192,8 @@ class TodoItem {
     DateTime? nextActivationDate,
     bool clearNextActivationDate = false,
     List<TodoSubItem>? subItems,
+    int? reminderMinutesBefore,
+    bool clearReminderMinutes = false,
     String? googleTaskId,
     bool clearGoogleTaskId = false,
     DateTime? lastEditedTime,
@@ -194,6 +221,7 @@ class TodoItem {
           ? null
           : (nextActivationDate ?? this.nextActivationDate),
       subItems: subItems ?? this.subItems.map((e) => e.copyWith()).toList(),
+      reminderMinutesBefore: clearReminderMinutes ? null : (reminderMinutesBefore ?? this.reminderMinutesBefore),
       googleTaskId:
           clearGoogleTaskId ? null : (googleTaskId ?? this.googleTaskId),
       lastEditedTime: lastEditedTime ?? DateTime.now(),
@@ -478,6 +506,7 @@ class TodoItem {
         'completedAt': completedAt?.toIso8601String(),
         'nextActivationDate': nextActivationDate?.toIso8601String(),
         'subItems': subItems.map((e) => e.toJson()).toList(),
+        'reminderMinutesBefore': reminderMinutesBefore,
         'googleTaskId': googleTaskId,
         'lastEditedTime': lastEditedTime.toIso8601String(),
         'isDeleted': isDeleted,
@@ -525,6 +554,7 @@ class TodoItem {
       nextActivationDate: json['nextActivationDate'] != null
           ? DateTime.tryParse(json['nextActivationDate'] as String)
           : null,
+      reminderMinutesBefore: (json['reminderMinutesBefore'] as num?)?.toInt(),
       subItems: ((json['subItems'] as List<dynamic>?) ?? const [])
           .map((e) => TodoSubItem.fromJson(
                 Map<String, dynamic>.from(e as Map),

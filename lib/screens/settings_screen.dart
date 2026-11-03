@@ -1,3 +1,7 @@
+﻿import '../services/notification_service.dart';
+import '../models/schedule_model.dart';
+import '../models/situation_model.dart';
+import '../models/todo_model.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
@@ -12,6 +16,10 @@ class SettingsScreen extends StatefulWidget {
   final int seedColorValue;
   final bool? isDarkMode;
   final int? themeColorValue;
+  final List<Schedule> schedules;
+  final List<Situation> situations;
+  final List<TodoItem> todos;
+
   final bool showTips;
   final bool autoResetOnScheduleTime;
   final bool autoResetDaily;
@@ -47,6 +55,9 @@ class SettingsScreen extends StatefulWidget {
     this.seedColorValue = 0xFF3F51B5,
     this.isDarkMode,
     this.themeColorValue,
+    this.schedules = const [],
+    this.situations = const [],
+    this.todos = const [],
     this.showTips = true,
     this.autoResetOnScheduleTime = true,
     this.autoResetDaily = true,
@@ -110,6 +121,9 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   // ignore: unused_field
+  late bool _scheduleNotifsEnabled;
+  late bool _todoNotifsEnabled;
+  // ignore: unused_field
   late bool _localAutoResetDaily;
   late String _localDailyResetTime;
   bool _isAuthBusy = false;
@@ -133,6 +147,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void initState() {
     super.initState();
+    _scheduleNotifsEnabled = NotificationService.instance.scheduleNotificationsEnabled;
+    _todoNotifsEnabled = NotificationService.instance.todoNotificationsEnabled;
     _localAutoResetDaily = widget.autoResetDaily;
     _localDailyResetTime = widget.dailyResetTime;
     _loadLocalPrefs();
@@ -787,6 +803,91 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             onChanged: (val) {
                               HapticFeedback.selectionClick();
                               widget.onShowTipsChanged(val);
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+
+                    const SizedBox(height: 12),
+
+                    // --- 푸시 알림 설정 카드 ---
+                    Card(
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      child: Column(
+                        children: [
+                          SwitchListTile(
+                            title: const Text(
+                              '일정 준비시간 알림',
+                              style: TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                            subtitle: const Text(
+                              '설정된 준비시간에 맞춰 상태 표시줄로 푸시 알림을 수신합니다.',
+                            ),
+                            value: _scheduleNotifsEnabled,
+                            onChanged: (val) async {
+                              HapticFeedback.selectionClick();                              if (val) {
+                                final granted = await NotificationService
+                                    .instance
+                                    .requestPermissions();
+                                if (!granted && context.mounted) {
+                                  ScaffoldMessenger.of(context).clearSnackBars();
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text(
+                                        '알림 권한이 허용되지 않았습니다. 휴대폰 설정에서 알림 권한을 확인해 주세요.',
+                                      ),
+                                      behavior: SnackBarBehavior.floating,
+                                    ),
+                                  );
+                                }
+                              }
+                              setState(() => _scheduleNotifsEnabled = val);
+                              await NotificationService.instance
+                                  .setScheduleNotificationsEnabled(
+                                val,
+                                widget.schedules,
+                                situations: {
+                                  for (var s in widget.situations) s.name: s
+                                },
+                              );
+                            },
+                          ),
+                          const Divider(height: 1),
+                          SwitchListTile(
+                            title: const Text(
+                              '할 일(Todo) 알림',
+                              style: TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                            subtitle: const Text(
+                              '할 일 마감 전 설정된 알림 시간에 맞춰 상태 표시줄로 푸시 알림을 수신합니다.',
+                            ),
+                            value: _todoNotifsEnabled,
+                            onChanged: (val) async {
+                              HapticFeedback.selectionClick();                              if (val) {
+                                final granted = await NotificationService
+                                    .instance
+                                    .requestPermissions();
+                                if (!granted && context.mounted) {
+                                  ScaffoldMessenger.of(context).clearSnackBars();
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text(
+                                        '알림 권한이 허용되지 않았습니다. 휴대폰 설정에서 알림 권한을 확인해 주세요.',
+                                      ),
+                                      behavior: SnackBarBehavior.floating,
+                                    ),
+                                  );
+                                }
+                              }
+                              setState(() => _todoNotifsEnabled = val);
+                              await NotificationService.instance
+                                  .setTodoNotificationsEnabled(
+                                val,
+                                widget.todos,
+                              );
                             },
                           ),
                         ],

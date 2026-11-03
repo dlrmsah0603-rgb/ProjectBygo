@@ -1,3 +1,4 @@
+﻿import 'services/notification_service.dart';
 // ignore_for_file: unused_field
 
 import 'dart:async';
@@ -13,8 +14,9 @@ import 'screens/todo_screen.dart';
 import 'services/google_sync_service.dart';
 import 'services/storage_service.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await NotificationService.instance.init();
   runApp(const BygoApp());
 }
 
@@ -77,12 +79,14 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    NotificationService.instance.onNotificationPayload.addListener(_handleNotificationPayload);
     _loadInitialData();
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    NotificationService.instance.onNotificationPayload.removeListener(_handleNotificationPayload);
     _lifecycleTimer?.cancel();
     _pageController.dispose();
     super.dispose();
@@ -96,6 +100,32 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
     }
   }
 
+  void _handleNotificationPayload() {
+    final payload = NotificationService.instance.onNotificationPayload.value;
+    if (payload == null || payload.isEmpty) return;
+    NotificationService.instance.onNotificationPayload.value = null;
+
+    if (payload.startsWith('schedule:')) {
+      final scheduleId = payload.replaceFirst('schedule:', '');
+      final sc = _schedules.where((s) => s.id == scheduleId).firstOrNull;
+      if (sc != null && sc.situationName != null) {
+        final sit = _situations.where((s) => s.name == sc.situationName).firstOrNull;
+        if (sit != null) {
+          setState(() {
+            _selectedSituationId = sit.id;
+            _currentIndex = 2;
+          });
+          _pageController.jumpToPage(2);
+          return;
+        }
+      }
+      setState(() => _currentIndex = 0);
+      _pageController.jumpToPage(0);
+    } else if (payload.startsWith('todo:')) {
+      setState(() => _currentIndex = 1);
+      _pageController.jumpToPage(1);
+    }
+  }
   Future<void> _loadInitialData() async {
     final schedules = await _storage.loadSchedules();
     final situations = await _storage.loadSituations();
@@ -135,6 +165,12 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
 
     _startLifecycleTimer();
     _triggerBackgroundAutoSync();
+
+    // 알림 권한 확인 및 초기 스케줄링 동기화
+    await NotificationService.instance.requestPermissions();
+    final sitMap = {for (var s in _situations) s.name: s};
+    await NotificationService.instance.syncScheduleNotifications(_schedules, situations: sitMap);
+    await NotificationService.instance.syncTodoNotifications(_todos);
   }
 
   void _startLifecycleTimer() {
@@ -176,6 +212,8 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
       });
       await _storage.saveSchedules(_schedules);
       _evaluateScheduleLifecycle();
+      final sitMap = {for (var s in _situations) s.name: s};
+      NotificationService.instance.syncScheduleNotifications(_schedules, situations: sitMap);
 
       if (!silent) {
         _messengerKey.currentState?.clearSnackBars();
@@ -211,6 +249,7 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
         _isSyncingTasks = false;
       });
       await _storage.saveTodos(_todos);
+      NotificationService.instance.syncTodoNotifications(_todos);
 
       if (!silent) {
         _messengerKey.currentState?.clearSnackBars();
@@ -532,11 +571,6 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
       final isIncomplete = sit.items.isNotEmpty && !sit.isAllChecked;
 
       for (final sc in group.schedules) {
-        final notifyKey = '${sc.id}_${todayKey}_${sc.prepMinutesBefore}';
-        if (!Schedule.notifiedKeys.contains(notifyKey)) {
-          Schedule.notifiedKeys.add(notifyKey);
-          _showPrepPushBanner(sc, sit);
-        }
 
         final focusWindowKey =
             'focus_${sit.id}_${sc.id}_${todayKey}_${sc.time}';
@@ -575,76 +609,6 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
     _syncHomeWidget(activeGroups);
   }
 
-  void _showPrepPushBanner(Schedule schedule, Situation situation) {
-    HapticFeedback.heavyImpact();
-    SystemSound.play(SystemSoundType.alert);
-
-    final messenger = _messengerKey.currentState;
-    if (messenger == null) return;
-
-    final prepLabel = schedule.prepSummaryText ?? '준비시간';
-    final statusText = situation.isAllChecked
-        ? '체크리스트 완료됨 🎉'
-        : '체크리스트 진행 현황: ${situation.checkedCount}/${situation.items.length}';
-
-    messenger.clearMaterialBanners();
-    messenger.showMaterialBanner(
-      MaterialBanner(
-        elevation: 4,
-        backgroundColor: Colors.orange.shade50,
-        leading: const CircleAvatar(
-          backgroundColor: Colors.deepOrange,
-          child: Icon(
-            Icons.notifications_active,
-            color: Colors.white,
-          ),
-        ),
-        content: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              '⏰ [$prepLabel] ${schedule.title} (${schedule.time})',
-              style: const TextStyle(
-                fontWeight: FontWeight.bold,
-                fontSize: 14,
-                color: Colors.black87,
-              ),
-            ),
-            const SizedBox(height: 2),
-            Text(
-              "'${situation.name}' 체크리스트가 자동 포커싱되었습니다! ($statusText)",
-              style: const TextStyle(
-                fontSize: 12,
-                color: Colors.black87,
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          FilledButton.tonal(
-            onPressed: () {
-              messenger.hideCurrentMaterialBanner();
-              setState(() {
-                _selectedSituationId = situation.id;
-                _currentIndex = 2;
-              });
-              _pageController.animateToPage(
-                2,
-                duration: const Duration(milliseconds: 250),
-                curve: Curves.easeOutCubic,
-              );
-            },
-            child: const Text('체크리스트 보기'),
-          ),
-          TextButton(
-            onPressed: () => messenger.hideCurrentMaterialBanner(),
-            child: const Text('닫기'),
-          ),
-        ],
-      ),
-    );
-  }
 
   void _syncHomeWidget(List<ActivePrepGroup> activeGroups) {
     if (activeGroups.isEmpty) {
@@ -1103,6 +1067,7 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
                             onTodosChanged: (updated) {
                               setState(() => _todos = List.from(updated));
                               _storage.saveTodos(_todos);
+                              NotificationService.instance.syncTodoNotifications(_todos);
                             },
                           ),
                           // 1: 할 일 탭

@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../models/todo_model.dart';
 import '../services/google_sync_service.dart';
@@ -166,6 +166,7 @@ class _TodoScreenState extends State<TodoScreen> {
     );
 
     DateTime? selectedDueDate = existing?.dueDate;
+    int? reminderMinutesBefore = existing?.reminderMinutesBefore;
     String? selectedDueTime = existing?.dueTime;
     TodoRepeatType repeatType = existing?.repeatType ?? TodoRepeatType.none;
     final List<int> repeatWeekdays = List<int>.from(
@@ -299,12 +300,43 @@ class _TodoScreenState extends State<TodoScreen> {
                                 tooltip: '시간 지우기',
                                 icon: const Icon(Icons.close, size: 18),
                                 onPressed: () => setDialogState(
-                                    () => selectedDueTime = null),
+                                    () { selectedDueTime = null; reminderMinutesBefore = null; }),
                               ),
                           ],
                         ),
                         const SizedBox(height: 14),
 
+                        if (selectedDueTime != null) ...[
+                          const SizedBox(height: 12),
+                          const Text(
+                            '알림 시간',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          DropdownButtonFormField<int?>(
+                            initialValue: reminderMinutesBefore,
+                            decoration: const InputDecoration(
+                              border: OutlineInputBorder(),
+                              contentPadding: EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 8,
+                              ),
+                            ),
+                            items: const [
+                              DropdownMenuItem(value: null, child: Text('설정 안 함')),
+                              DropdownMenuItem(value: 10, child: Text('10분 전')),
+                              DropdownMenuItem(value: 15, child: Text('15분 전')),
+                              DropdownMenuItem(value: 30, child: Text('30분 전')),
+                              DropdownMenuItem(value: 60, child: Text('1시간 전')),
+                              DropdownMenuItem(value: 120, child: Text('2시간 전')),
+                            ],
+                            onChanged: (val) =>
+                                setDialogState(() => reminderMinutesBefore = val),
+                          ),
+                        ],
                         // 반복 주기 설정 (일정과 동일한 n일/주/개월/년 + 요일 + 종료 조건)
                         const Text(
                           '반복 주기 설정',
@@ -594,6 +626,7 @@ class _TodoScreenState extends State<TodoScreen> {
                               effectiveRepeat == TodoRepeatType.lastDayOfMonth
                                   ? 31
                                   : selectedDueDate?.day,
+                          reminderMinutesBefore: reminderMinutesBefore,
                           subItems: subItems,
                           lastEditedTime: DateTime.now(),
                         ),
@@ -614,6 +647,7 @@ class _TodoScreenState extends State<TodoScreen> {
                           effectiveRepeat == TodoRepeatType.lastDayOfMonth
                               ? 31
                               : selectedDueDate?.day;
+                      existing.reminderMinutesBefore = reminderMinutesBefore;
                       existing.subItems = subItems;
                       existing.markUpdated();
                     }
@@ -717,7 +751,7 @@ class _TodoScreenState extends State<TodoScreen> {
                     ],
                   ],
                 ),
-                subtitle: (todo.dueTime != null || todo.isRepeating)
+                subtitle: (todo.dueTime != null || todo.isRepeating || todo.hasReminder)
                     ? Padding(
                         padding: const EdgeInsets.only(top: 4),
                         child: Wrap(
@@ -733,6 +767,14 @@ class _TodoScreenState extends State<TodoScreen> {
                                       ? FontWeight.bold
                                       : FontWeight.normal,
                                   color: isOverdue ? Colors.redAccent : null,
+                                ),
+                              ),
+                            if (todo.hasReminder)
+                              Text(
+                                '🔔 ${todo.reminderSummaryText}',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: scheme.primary,
                                 ),
                               ),
                             if (todo.isRepeating)
