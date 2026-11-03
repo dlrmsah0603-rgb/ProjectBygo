@@ -6,26 +6,11 @@ enum ScheduleRepeatType {
   yearly,
 }
 
-extension ScheduleRepeatTypeExtension on ScheduleRepeatType {
-  String get optionLabel {
-    switch (this) {
-      case ScheduleRepeatType.none:
-        return '반복 안 함';
-      case ScheduleRepeatType.daily:
-        return 'n일마다';
-      case ScheduleRepeatType.weekly:
-        return 'n주마다';
-      case ScheduleRepeatType.monthly:
-        return 'n개월마다';
-      case ScheduleRepeatType.yearly:
-        return 'n년마다';
-    }
-  }
-
+extension ScheduleRepeatTypeExt on ScheduleRepeatType {
   String get unitLabel {
     switch (this) {
       case ScheduleRepeatType.none:
-        return '';
+        return '반복 안 함';
       case ScheduleRepeatType.daily:
         return '일마다';
       case ScheduleRepeatType.weekly:
@@ -36,38 +21,35 @@ extension ScheduleRepeatTypeExtension on ScheduleRepeatType {
         return '년마다';
     }
   }
+
+  String get label => unitLabel;
 }
 
 class Schedule {
+  /// 준비시간 알림 중복 발생 방지용 키 집합 (main.dart 연동)
   static final Set<String> notifiedKeys = <String>{};
 
-  static const List<String> weekdayLabels = [
-    '월',
-    '화',
-    '수',
-    '목',
-    '금',
-    '토',
-    '일',
-  ];
-
   String id;
-  DateTime date; // 단일 일정 날짜 또는 반복 일정의 시작일
+  DateTime date; // 단일 일정 날짜 또는 반복 일정 시작일
   String title;
-  String time; // 'HH:mm'
-
-  List<String> tags; // 다중 태그 목록 (캘린더 필터링용)
-  String? situationName; // 연결된 외출 상황 이름 (단일 체크리스트 매핑용, 미선택 시 null)
+  String time; // "HH:mm" 형식 (예: "09:00")
+  List<String> tags; // 다중 태그 목록
+  String? situationName; // 연결된 단일 외출 상황 이름
 
   ScheduleRepeatType repeatType;
-  int repeatInterval; // n (기본값 1)
-  List<int> repeatWeekdays; // 1(월) ~ 7(일), weekly일 때 사용
-  DateTime? repeatEndDate; // 반복 종료일 (null이면 무기한 또는 횟수 기준)
-  int? repeatCount; // 총 반복 횟수 (null이면 무기한 또는 종료일 기준)
-  List<String> excludedDates; // 예외(삭제/분리) 처리된 날짜 키 목록 ('yyyy-MM-dd')
+  int repeatInterval; // n일/주/개월/년 간격 (기본값 1)
+  List<int> repeatWeekdays; // 1(월) ~ 7(일)
+  DateTime? repeatEndDate; // 반복 종료일
+  int? repeatCount; // 총 반복 횟수 제한
+  List<String> excludedDates; // 예외(삭제/분리) 처리된 날짜 목록 ('yyyy-MM-dd')
 
-  int? prepMinutesBefore; // 준비시간 (일정 몇 분 전, null 또는 0이면 미설정)
-  bool isAutoRecord; // 체크리스트 완료 자동 기록용 일정 여부
+  int? prepMinutesBefore; // 사전 준비시간(분)
+  bool isAutoRecord; // 체크리스트 100% 완료 시 자동 생성된 기록 일정 여부
+
+  // --- 구글 캘린더 양방향 동기화 필드 ---
+  String? googleEventId;
+  DateTime lastEditedTime;
+  bool isDeleted;
 
   Schedule({
     required this.id,
@@ -75,9 +57,9 @@ class Schedule {
     required this.title,
     required this.time,
     List<String>? tags,
-    String tag = '', // 단일 문자열 입력 하위 호환용
+    String? tag,
     this.situationName,
-    ScheduleRepeatType? repeatType,
+    this.repeatType = ScheduleRepeatType.none,
     int repeatInterval = 1,
     List<int>? repeatWeekdays,
     this.repeatEndDate,
@@ -85,40 +67,53 @@ class Schedule {
     List<String>? excludedDates,
     this.prepMinutesBefore,
     this.isAutoRecord = false,
+    this.googleEventId,
+    DateTime? lastEditedTime,
+    this.isDeleted = false,
   })  : tags = tags != null
-            ? tags
-                .map((e) => e.trim().replaceAll('#', ''))
-                .where((e) => e.isNotEmpty)
-                .toSet()
-                .toList()
-            : (tag.trim().replaceAll('#', '').isNotEmpty
-                ? [tag.trim().replaceAll('#', '')]
+            ? List<String>.from(tags)
+            : (tag != null && tag.trim().isNotEmpty
+                ? <String>[tag.trim()]
                 : <String>[]),
         repeatInterval = repeatInterval < 1 ? 1 : repeatInterval,
-        repeatWeekdays =
-            repeatWeekdays != null ? List<int>.from(repeatWeekdays) : [],
-        excludedDates =
-            excludedDates != null ? List<String>.from(excludedDates) : [],
-        repeatType = repeatType ??
-            ((repeatWeekdays != null && repeatWeekdays.isNotEmpty)
-                ? ScheduleRepeatType.weekly
-                : ScheduleRepeatType.none);
-
-  /// 하위 호환용 대표 태그 getter/setter
-  String get tag => tags.isNotEmpty ? tags.first : '';
-  set tag(String value) {
-    final clean = value.trim().replaceAll('#', '');
-    if (clean.isEmpty) {
-      tags = [];
-    } else {
-      tags = [clean];
+        repeatWeekdays = repeatWeekdays != null
+            ? List<int>.from(repeatWeekdays)
+            : <int>[],
+        excludedDates = excludedDates != null
+            ? List<String>.from(excludedDates)
+            : <String>[],
+        lastEditedTime = lastEditedTime ?? DateTime.now() {
+    // 하위 호환: 요일 리스트만 넘어오고 repeatType이 none인 경우 weekly로 자동 보정
+    if (repeatType == ScheduleRepeatType.none &&
+        this.repeatWeekdays.isNotEmpty) {
+      repeatType = ScheduleRepeatType.weekly;
     }
   }
 
-  bool get hasSituation =>
-      situationName != null && situationName!.trim().isNotEmpty;
+  String get name => title;
+  set name(String value) => title = value;
 
-  bool get isRepeating => repeatType != ScheduleRepeatType.none;
+  /// 단일 태그 하위 호환 Getter / Setter
+  String get tag => tags.isNotEmpty ? tags.first : (situationName ?? '');
+  set tag(String value) {
+    final trimmed = value.trim();
+    if (trimmed.isEmpty) {
+      tags.clear();
+    } else if (tags.isEmpty) {
+      tags.add(trimmed);
+    } else {
+      tags[0] = trimmed;
+    }
+  }
+
+  bool get isRepeating =>
+      repeatType != ScheduleRepeatType.none || repeatWeekdays.isNotEmpty;
+
+  bool get hasPrepTime => prepMinutesBefore != null && prepMinutesBefore! > 0;
+
+  void markUpdated() {
+    lastEditedTime = DateTime.now();
+  }
 
   static String dateKey(DateTime d) {
     final y = d.year.toString().padLeft(4, '0');
@@ -127,247 +122,10 @@ class Schedule {
     return '$y-$m-$day';
   }
 
-  static int _daysInMonth(int year, int month) {
-    return DateTime.utc(year, month + 1, 0).day;
-  }
+  static String formatDateKey(DateTime d) => dateKey(d);
 
-  /// 특정 날짜(day)에 이 일정의 시간(HH:mm)을 합친 DateTime 반환
-  DateTime scheduleDateTimeForDay(DateTime day) {
-    final parts = time.split(':');
-    final h = (int.tryParse(parts.firstOrNull ?? '9') ?? 9).clamp(0, 23);
-    final m =
-        (int.tryParse(parts.length > 1 ? parts[1] : '0') ?? 0).clamp(0, 59);
-    return DateTime(day.year, day.month, day.day, h, m);
-  }
-
-  /// 준비시간 시각 문자열 ('HH:mm')
-  String? get prepTimeString {
-    if (prepMinutesBefore == null || prepMinutesBefore! <= 0) return null;
-    final dt = scheduleDateTimeForDay(date)
-        .subtract(Duration(minutes: prepMinutesBefore!));
-    final hh = dt.hour.toString().padLeft(2, '0');
-    final mm = dt.minute.toString().padLeft(2, '0');
-    return '$hh:$mm';
-  }
-
-  /// 준비시간 요약 텍스트 (예: '30분 전', '1시간 30분 전')
-  String? get prepSummaryText {
-    if (prepMinutesBefore == null || prepMinutesBefore! <= 0) return null;
-    final mins = prepMinutesBefore!;
-    final h = mins ~/ 60;
-    final m = mins % 60;
-    if (h > 0 && m > 0) return '$h시간 $m분 전';
-    if (h > 0) return '$h시간 전';
-    return '$m분 전';
-  }
-
-  /// 현재 시각(now)이 준비시간 ~ 일정 정각 사이 구간인지 판별
-  bool isInPrepWindowAt(DateTime now) {
-    if (isAutoRecord) return false;
-    if (prepMinutesBefore == null || prepMinutesBefore! <= 0) return false;
-
-    final today = DateTime(now.year, now.month, now.day);
-    final tomorrow = today.add(const Duration(days: 1));
-
-    for (final candidateDay in [today, tomorrow]) {
-      if (!occursOn(candidateDay)) continue;
-      final schedDt = scheduleDateTimeForDay(candidateDay);
-      final prepDt = schedDt.subtract(Duration(minutes: prepMinutesBefore!));
-      if (!now.isBefore(prepDt) && now.isBefore(schedDt)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  /// 반복 설정 요약 문자열 (캘린더 일정 카드 표시용)
-  String get repeatSummaryText {
-    if (!isRepeating) return '';
-    final n = repeatInterval;
-    String base = '';
-
-    switch (repeatType) {
-      case ScheduleRepeatType.none:
-        return '';
-      case ScheduleRepeatType.daily:
-        base = n == 1 ? '매일' : '$n일마다';
-        break;
-      case ScheduleRepeatType.weekly:
-        final days = repeatWeekdays.isEmpty ? [date.weekday] : repeatWeekdays;
-        final sorted = List<int>.from(days)..sort();
-        final dayStr =
-            sorted.map((d) => weekdayLabels[(d - 1).clamp(0, 6)]).join('·');
-        base = n == 1 ? '매주 $dayStr' : '$n주마다 ($dayStr)';
-        break;
-      case ScheduleRepeatType.monthly:
-        base = n == 1 ? '매달 ${date.day}일' : '$n개월마다 (${date.day}일)';
-        break;
-      case ScheduleRepeatType.yearly:
-        base = n == 1
-            ? '매년 ${date.month}/${date.day}'
-            : '$n년마다 (${date.month}/${date.day})';
-        break;
-    }
-
-    if (repeatEndDate != null) {
-      base += ' (~${repeatEndDate!.month}/${repeatEndDate!.day})';
-    } else if (repeatCount != null && repeatCount! > 0) {
-      base += ' (총 $repeatCount회)';
-    }
-    return base;
-  }
-
-  /// 반복 주기 패턴에 부합하는지 확인
-  bool _matchesPattern(DateTime start, DateTime target) {
-    final n = repeatInterval < 1 ? 1 : repeatInterval;
-
-    switch (repeatType) {
-      case ScheduleRepeatType.none:
-        return target.year == start.year &&
-            target.month == start.month &&
-            target.day == start.day;
-
-      case ScheduleRepeatType.daily:
-        final diffDays = target.difference(start).inDays;
-        return diffDays >= 0 && diffDays % n == 0;
-
-      case ScheduleRepeatType.weekly:
-        final weekdays =
-            repeatWeekdays.isEmpty ? [start.weekday] : repeatWeekdays;
-        if (!weekdays.contains(target.weekday)) return false;
-
-        final startMonday =
-            start.subtract(Duration(days: start.weekday - 1));
-        final targetMonday =
-            target.subtract(Duration(days: target.weekday - 1));
-        final diffWeeks = targetMonday.difference(startMonday).inDays ~/ 7;
-        return diffWeeks >= 0 && diffWeeks % n == 0;
-
-      case ScheduleRepeatType.monthly:
-        final diffMonths =
-            (target.year - start.year) * 12 + (target.month - start.month);
-        if (diffMonths < 0 || diffMonths % n != 0) return false;
-        final maxDay = _daysInMonth(target.year, target.month);
-        final expectedDay = start.day > maxDay ? maxDay : start.day;
-        return target.day == expectedDay;
-
-      case ScheduleRepeatType.yearly:
-        final diffYears = target.year - start.year;
-        if (diffYears < 0 || diffYears % n != 0) return false;
-        if (target.month != start.month) return false;
-        final maxDay = _daysInMonth(target.year, target.month);
-        final expectedDay = start.day > maxDay ? maxDay : start.day;
-        return target.day == expectedDay;
-    }
-  }
-
-  /// 시작일(start)부터 대상 날짜(target)까지 몇 번째 반복 발생인지 계산
-  int _countOccurrencesUpTo(DateTime start, DateTime target) {
-    final n = repeatInterval < 1 ? 1 : repeatInterval;
-
-    switch (repeatType) {
-      case ScheduleRepeatType.none:
-        return 1;
-
-      case ScheduleRepeatType.daily:
-        final diffDays = target.difference(start).inDays;
-        return (diffDays ~/ n) + 1;
-
-      case ScheduleRepeatType.weekly:
-        final weekdays =
-            (repeatWeekdays.isEmpty ? [start.weekday] : repeatWeekdays)
-                .toSet()
-                .toList()
-              ..sort();
-        final startMonday =
-            start.subtract(Duration(days: start.weekday - 1));
-        final targetMonday =
-            target.subtract(Duration(days: target.weekday - 1));
-        final totalSelectedWeeks =
-            targetMonday.difference(startMonday).inDays ~/ 7;
-
-        int count = 0;
-        if (totalSelectedWeeks == 0) {
-          for (final w in weekdays) {
-            if (w >= start.weekday && w <= target.weekday) {
-              count++;
-            }
-          }
-          return count;
-        }
-
-        for (final w in weekdays) {
-          if (w >= start.weekday) {
-            count++;
-          }
-        }
-
-        final intermediateActiveWeeks = (totalSelectedWeeks - 1) ~/ n;
-        if (intermediateActiveWeeks > 0) {
-          count += intermediateActiveWeeks * weekdays.length;
-        }
-
-        if (totalSelectedWeeks % n == 0) {
-          for (final w in weekdays) {
-            if (w <= target.weekday) {
-              count++;
-            }
-          }
-        }
-        return count;
-
-      case ScheduleRepeatType.monthly:
-        final diffMonths =
-            (target.year - start.year) * 12 + (target.month - start.month);
-        return (diffMonths ~/ n) + 1;
-
-      case ScheduleRepeatType.yearly:
-        final diffYears = target.year - start.year;
-        return (diffYears ~/ n) + 1;
-    }
-  }
-
-  bool occursOn(DateTime day) {
-    final target = DateTime.utc(day.year, day.month, day.day);
-    final start = DateTime.utc(date.year, date.month, date.day);
-
-    if (excludedDates.contains(dateKey(target))) {
-      return false;
-    }
-
-    if (!isRepeating) {
-      return target.year == start.year &&
-          target.month == start.month &&
-          target.day == start.day;
-    }
-
-    if (target.isBefore(start)) {
-      return false;
-    }
-
-    if (repeatEndDate != null) {
-      final end = DateTime.utc(
-        repeatEndDate!.year,
-        repeatEndDate!.month,
-        repeatEndDate!.day,
-      );
-      if (target.isAfter(end)) {
-        return false;
-      }
-    }
-
-    if (!_matchesPattern(start, target)) {
-      return false;
-    }
-
-    if (repeatCount != null && repeatCount! > 0) {
-      final occurrences = _countOccurrencesUpTo(start, target);
-      if (occurrences > repeatCount!) {
-        return false;
-      }
-    }
-
-    return true;
+  static int daysInMonth(int year, int month) {
+    return DateTime(year, month + 1, 0).day;
   }
 
   Schedule copyWith({
@@ -376,6 +134,7 @@ class Schedule {
     String? title,
     String? time,
     List<String>? tags,
+    String? tag,
     String? situationName,
     bool clearSituationName = false,
     ScheduleRepeatType? repeatType,
@@ -387,15 +146,29 @@ class Schedule {
     bool clearRepeatCount = false,
     List<String>? excludedDates,
     int? prepMinutesBefore,
+    bool clearPrepMinutes = false,
     bool clearPrepMinutesBefore = false,
     bool? isAutoRecord,
+    String? googleEventId,
+    bool clearGoogleEventId = false,
+    DateTime? lastEditedTime,
+    bool? isDeleted,
   }) {
+    List<String> nextTags;
+    if (tags != null) {
+      nextTags = List<String>.from(tags);
+    } else if (tag != null) {
+      nextTags = tag.trim().isEmpty ? <String>[] : <String>[tag.trim()];
+    } else {
+      nextTags = List<String>.from(this.tags);
+    }
+
     return Schedule(
       id: id ?? this.id,
       date: date ?? this.date,
       title: title ?? this.title,
       time: time ?? this.time,
-      tags: tags != null ? List<String>.from(tags) : List<String>.from(this.tags),
+      tags: nextTags,
       situationName:
           clearSituationName ? null : (situationName ?? this.situationName),
       repeatType: repeatType ?? this.repeatType,
@@ -409,100 +182,350 @@ class Schedule {
       excludedDates: excludedDates != null
           ? List<String>.from(excludedDates)
           : List<String>.from(this.excludedDates),
-      prepMinutesBefore: clearPrepMinutesBefore
+      prepMinutesBefore: (clearPrepMinutes || clearPrepMinutesBefore)
           ? null
           : (prepMinutesBefore ?? this.prepMinutesBefore),
       isAutoRecord: isAutoRecord ?? this.isAutoRecord,
+      googleEventId:
+          clearGoogleEventId ? null : (googleEventId ?? this.googleEventId),
+      lastEditedTime: lastEditedTime ?? DateTime.now(),
+      isDeleted: isDeleted ?? this.isDeleted,
     );
   }
 
-  Map<String, dynamic> toJson() {
-    return {
-      'id': id,
-      'date': date.toIso8601String(),
-      'title': title,
-      'time': time,
-      'tags': tags,
-      'tag': tag, // 하위 호환 유지
-      'situationName': situationName,
-      'repeatType': repeatType.name,
-      'repeatInterval': repeatInterval,
-      'repeatWeekdays': repeatWeekdays,
-      'repeatEndDate': repeatEndDate?.toIso8601String(),
-      'repeatCount': repeatCount,
-      'excludedDates': excludedDates,
-      'prepMinutesBefore': prepMinutesBefore,
-      'isAutoRecord': isAutoRecord,
-    };
+  /// 특정 날짜(day)에 이 일정의 예정 시각(DateTime) 반환
+  DateTime scheduleDateTimeForDay(DateTime day) {
+    final parts = time.split(':');
+    final hour = parts.isNotEmpty ? (int.tryParse(parts[0]) ?? 9) : 9;
+    final minute = parts.length > 1 ? (int.tryParse(parts[1]) ?? 0) : 0;
+    return DateTime(day.year, day.month, day.day, hour, minute);
   }
 
+  DateTime scheduledDateTimeOn(DateTime day) => scheduleDateTimeForDay(day);
+
+  /// 특정 날짜(day)의 준비 시작 시각(DateTime) 반환
+  DateTime? prepDateTimeForDay(DateTime day) {
+    if (!hasPrepTime) return null;
+    return scheduleDateTimeForDay(day)
+        .subtract(Duration(minutes: prepMinutesBefore!));
+  }
+
+  DateTime? prepStartDateTimeOn(DateTime day) => prepDateTimeForDay(day);
+
+  /// 준비 시작 시각 포맷 문자열 ("HH:mm")
+  String? get prepTimeString {
+    if (!hasPrepTime) return null;
+    final prepDt = prepDateTimeForDay(date);
+    if (prepDt == null) return null;
+    final hh = prepDt.hour.toString().padLeft(2, '0');
+    final mm = prepDt.minute.toString().padLeft(2, '0');
+    return '$hh:$mm';
+  }
+
+  /// 준비시간 요약 문구 (예: "30분 전 (08:30)")
+  String? get prepSummaryText {
+    if (!hasPrepTime) return null;
+    final mins = prepMinutesBefore!;
+    final pTime = prepTimeString ?? '';
+    if (mins % 60 == 0) {
+      return '${mins ~/ 60}시간 전 ($pTime)';
+    } else if (mins > 60) {
+      return '${mins ~/ 60}시간 ${mins % 60}분 전 ($pTime)';
+    }
+    return '$mins분 전 ($pTime)';
+  }
+
+  /// 반복 설정 요약 문구
+  String get repeatSummaryText {
+    if (!isRepeating) return '';
+    final effectiveType =
+        repeatType == ScheduleRepeatType.none && repeatWeekdays.isNotEmpty
+            ? ScheduleRepeatType.weekly
+            : repeatType;
+    final n = repeatInterval < 1 ? 1 : repeatInterval;
+    String base = '';
+
+    switch (effectiveType) {
+      case ScheduleRepeatType.none:
+        return '';
+      case ScheduleRepeatType.daily:
+        base = n == 1 ? '매일' : '$n일마다';
+        break;
+      case ScheduleRepeatType.weekly:
+        const dayNames = ['', '월', '화', '수', '목', '금', '토', '일'];
+        final sorted = List<int>.from(repeatWeekdays)..sort();
+        final daysStr = sorted
+            .where((d) => d >= 1 && d <= 7)
+            .map((d) => dayNames[d])
+            .join('·');
+        final prefix = n == 1 ? '매주' : '$n주마다';
+        base = daysStr.isNotEmpty ? '$prefix ($daysStr)' : prefix;
+        break;
+      case ScheduleRepeatType.monthly:
+        base = n == 1 ? '매달 ${date.day}일' : '$n개월마다 ${date.day}일';
+        if (date.day >= 29) base += ' (말일 보정)';
+        break;
+      case ScheduleRepeatType.yearly:
+        base = n == 1
+            ? '매년 ${date.month}/${date.day}'
+            : '$n년마다 ${date.month}/${date.day}';
+        break;
+    }
+
+    if (repeatCount != null && repeatCount! > 0) {
+      return '$base (총 $repeatCount회)';
+    } else if (repeatEndDate != null) {
+      return '$base (~${repeatEndDate!.month}/${repeatEndDate!.day}까지)';
+    }
+    return base;
+  }
+
+  /// 현재 시각(now)이 이 일정의 준비시간 구간 [준비시작 ~ 일정정각) 내에 있는지 판별
+  bool isInPrepWindowAt(DateTime now) {
+    if (isDeleted || isAutoRecord || !hasPrepTime) return false;
+    final today = DateTime(now.year, now.month, now.day);
+    final tomorrow = today.add(const Duration(days: 1));
+
+    for (final candidateDay in [today, tomorrow]) {
+      if (!occursOn(candidateDay)) continue;
+      final prepStart = prepDateTimeForDay(candidateDay);
+      final schedTime = scheduleDateTimeForDay(candidateDay);
+      if (prepStart != null &&
+          !now.isBefore(prepStart) &&
+          now.isBefore(schedTime)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool _matchesPatternOn(DateTime target, DateTime start) {
+    final effectiveType =
+        repeatType == ScheduleRepeatType.none && repeatWeekdays.isNotEmpty
+            ? ScheduleRepeatType.weekly
+            : repeatType;
+    final interval = repeatInterval < 1 ? 1 : repeatInterval;
+
+    switch (effectiveType) {
+      case ScheduleRepeatType.none:
+        return isSameDay(target, start);
+      case ScheduleRepeatType.daily:
+        final diffDays = target.difference(start).inDays;
+        return diffDays >= 0 && diffDays % interval == 0;
+      case ScheduleRepeatType.weekly:
+        final weekdays =
+            repeatWeekdays.isEmpty ? <int>[start.weekday] : repeatWeekdays;
+        if (!weekdays.contains(target.weekday)) return false;
+        final startMonday =
+            start.subtract(Duration(days: start.weekday - 1));
+        final targetMonday =
+            target.subtract(Duration(days: target.weekday - 1));
+        final diffWeeks = targetMonday.difference(startMonday).inDays ~/ 7;
+        return diffWeeks >= 0 && diffWeeks % interval == 0;
+      case ScheduleRepeatType.monthly:
+        final monthDiff =
+            (target.year - start.year) * 12 + (target.month - start.month);
+        if (monthDiff < 0 || monthDiff % interval != 0) return false;
+        final maxDay = daysInMonth(target.year, target.month);
+        final expectedDay = start.day > maxDay ? maxDay : start.day;
+        return target.day == expectedDay;
+      case ScheduleRepeatType.yearly:
+        final yearDiff = target.year - start.year;
+        if (yearDiff < 0 || yearDiff % interval != 0) return false;
+        if (target.month != start.month) return false;
+        final maxDay = daysInMonth(target.year, target.month);
+        final expectedDay = start.day > maxDay ? maxDay : start.day;
+        return target.day == expectedDay;
+    }
+  }
+
+  int _occurrenceIndexOn(DateTime target, DateTime start) {
+    final effectiveType =
+        repeatType == ScheduleRepeatType.none && repeatWeekdays.isNotEmpty
+            ? ScheduleRepeatType.weekly
+            : repeatType;
+    final interval = repeatInterval < 1 ? 1 : repeatInterval;
+
+    switch (effectiveType) {
+      case ScheduleRepeatType.none:
+        return 1;
+      case ScheduleRepeatType.daily:
+        return (target.difference(start).inDays ~/ interval) + 1;
+      case ScheduleRepeatType.weekly:
+        final weekdays =
+            (repeatWeekdays.isEmpty ? <int>[start.weekday] : repeatWeekdays)
+                .toSet()
+                .toList()
+              ..sort();
+        final startMonday =
+            start.subtract(Duration(days: start.weekday - 1));
+        final targetMonday =
+            target.subtract(Duration(days: target.weekday - 1));
+        final diffWeeks = targetMonday.difference(startMonday).inDays ~/ 7;
+        final cycleIndex = diffWeeks ~/ interval;
+
+        if (cycleIndex == 0) {
+          return weekdays
+              .where((w) => w >= start.weekday && w <= target.weekday)
+              .length;
+        }
+        final firstWeekCount =
+            weekdays.where((w) => w >= start.weekday).length;
+        final middleCyclesCount = (cycleIndex - 1) * weekdays.length;
+        final targetWeekCount =
+            weekdays.where((w) => w <= target.weekday).length;
+        return firstWeekCount + middleCyclesCount + targetWeekCount;
+      case ScheduleRepeatType.monthly:
+        final monthDiff =
+            (target.year - start.year) * 12 + (target.month - start.month);
+        return (monthDiff ~/ interval) + 1;
+      case ScheduleRepeatType.yearly:
+        final yearDiff = target.year - start.year;
+        return (yearDiff ~/ interval) + 1;
+    }
+  }
+
+  /// 특정 날짜(day)에 이 일정이 발생하는지 O(1)로 판별
+  bool occursOn(DateTime day) {
+    if (isDeleted) return false;
+
+    final normalizedDay = DateTime(day.year, day.month, day.day);
+    final normalizedStart = DateTime(date.year, date.month, date.day);
+
+    if (excludedDates.contains(dateKey(normalizedDay))) {
+      return false;
+    }
+
+    if (normalizedDay.isBefore(normalizedStart)) {
+      return false;
+    }
+
+    if (!isRepeating) {
+      return isSameDay(normalizedDay, normalizedStart);
+    }
+
+    if (repeatEndDate != null) {
+      final normalizedEnd = DateTime(
+        repeatEndDate!.year,
+        repeatEndDate!.month,
+        repeatEndDate!.day,
+      );
+      if (normalizedDay.isAfter(normalizedEnd)) {
+        return false;
+      }
+    }
+
+    if (!_matchesPatternOn(normalizedDay, normalizedStart)) {
+      return false;
+    }
+
+    if (repeatCount != null && repeatCount! > 0) {
+      final occIndex = _occurrenceIndexOn(normalizedDay, normalizedStart);
+      if (occIndex > repeatCount!) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  bool isSameDay(DateTime a, DateTime b) {
+    return a.year == b.year && a.month == b.month && a.day == b.day;
+  }
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'date': date.toIso8601String(),
+        'title': title,
+        'name': title,
+        'time': time,
+        'tags': tags,
+        'tag': tag,
+        'situationName': situationName,
+        'repeatType': repeatType.index,
+        'repeatInterval': repeatInterval,
+        'repeatWeekdays': repeatWeekdays,
+        'repeatEndDate': repeatEndDate?.toIso8601String(),
+        'repeatCount': repeatCount,
+        'excludedDates': excludedDates,
+        'prepMinutesBefore': prepMinutesBefore,
+        'isAutoRecord': isAutoRecord,
+        'googleEventId': googleEventId,
+        'lastEditedTime': lastEditedTime.toIso8601String(),
+        'isDeleted': isDeleted,
+      };
+
   factory Schedule.fromJson(Map<String, dynamic> json) {
-    final parsedWeekdays = (json['repeatWeekdays'] as List<dynamic>?)
-            ?.map((e) => (e as num).toInt())
-            .toList() ??
-        [];
+    final parsedWeekdays = ((json['repeatWeekdays'] as List<dynamic>?) ??
+            (json['repeatDays'] as List<dynamic>?) ??
+            const [])
+        .map((e) => (e as num).toInt())
+        .toList();
 
     ScheduleRepeatType parsedRepeatType = ScheduleRepeatType.none;
-    final rawRepeatType = json['repeatType'] as String?;
-    if (rawRepeatType != null && rawRepeatType.isNotEmpty) {
+    if (json['repeatType'] is int) {
+      final idx = (json['repeatType'] as int)
+          .clamp(0, ScheduleRepeatType.values.length - 1);
+      parsedRepeatType = ScheduleRepeatType.values[idx];
+    } else if (json['repeatType'] is String) {
+      final str = json['repeatType'] as String;
       parsedRepeatType = ScheduleRepeatType.values.firstWhere(
-        (e) => e.name == rawRepeatType,
-        orElse: () => parsedWeekdays.isNotEmpty
-            ? ScheduleRepeatType.weekly
-            : ScheduleRepeatType.none,
+        (e) => e.name == str,
+        orElse: () => ScheduleRepeatType.none,
       );
     } else if (parsedWeekdays.isNotEmpty) {
       parsedRepeatType = ScheduleRepeatType.weekly;
     }
 
-    final List<String> parsedTags = [];
+    List<String> parsedTags = <String>[];
     if (json['tags'] is List) {
-      for (final item in (json['tags'] as List)) {
-        final clean = item.toString().trim().replaceAll('#', '');
-        if (clean.isNotEmpty && !parsedTags.contains(clean)) {
-          parsedTags.add(clean);
-        }
-      }
-    } else if (json['tag'] is String) {
-      final clean = (json['tag'] as String).trim().replaceAll('#', '');
-      if (clean.isNotEmpty) {
-        parsedTags.add(clean);
-      }
+      parsedTags = (json['tags'] as List<dynamic>)
+          .map((e) => e.toString().trim())
+          .where((e) => e.isNotEmpty)
+          .toList();
+    } else if (json['tag'] is String &&
+        (json['tag'] as String).trim().isNotEmpty) {
+      parsedTags = <String>[(json['tag'] as String).trim()];
     }
 
-    final rawSitName = (json['situationName'] as String?)?.trim();
+    String? parsedSitName = json['situationName'] as String?;
+    if ((parsedSitName == null || parsedSitName.trim().isEmpty) &&
+        json['tag'] is String &&
+        (json['tag'] as String).trim().isNotEmpty) {
+      parsedSitName = (json['tag'] as String).trim();
+    }
 
     return Schedule(
       id: (json['id'] as String?) ??
           DateTime.now().microsecondsSinceEpoch.toString(),
       date: json['date'] != null
-          ? (DateTime.tryParse(json['date'].toString()) ?? DateTime.now())
+          ? (DateTime.tryParse(json['date'] as String) ?? DateTime.now())
           : DateTime.now(),
-      title: (json['title'] as String?) ?? '',
+      title: (json['title'] as String?) ?? (json['name'] as String?) ?? '',
       time: (json['time'] as String?) ?? '09:00',
       tags: parsedTags,
-      situationName:
-          (rawSitName != null && rawSitName.isNotEmpty) ? rawSitName : null,
+      situationName: parsedSitName,
       repeatType: parsedRepeatType,
-      repeatInterval: ((json['repeatInterval'] as num?)?.toInt() ?? 1).clamp(
-        1,
-        999,
-      ),
+      repeatInterval: (json['repeatInterval'] as num?)?.toInt() ?? 1,
       repeatWeekdays: parsedWeekdays,
       repeatEndDate: json['repeatEndDate'] != null
-          ? DateTime.tryParse(json['repeatEndDate'].toString())
+          ? DateTime.tryParse(json['repeatEndDate'] as String)
           : null,
       repeatCount: (json['repeatCount'] as num?)?.toInt(),
-      excludedDates: (json['excludedDates'] as List<dynamic>?)
-              ?.map((e) => e.toString())
-              .toList() ??
-          [],
+      excludedDates: ((json['excludedDates'] as List<dynamic>?) ?? const [])
+          .map((e) => e.toString())
+          .toList(),
       prepMinutesBefore: (json['prepMinutesBefore'] as num?)?.toInt(),
       isAutoRecord: (json['isAutoRecord'] as bool?) ?? false,
+      googleEventId: json['googleEventId'] as String?,
+      lastEditedTime: json['lastEditedTime'] != null
+          ? (DateTime.tryParse(json['lastEditedTime'] as String) ??
+              DateTime.now())
+          : DateTime.now(),
+      isDeleted: (json['isDeleted'] as bool?) ?? false,
     );
   }
 
   Map<String, dynamic> toMap() => toJson();
-
   factory Schedule.fromMap(Map<String, dynamic> map) => Schedule.fromJson(map);
 }

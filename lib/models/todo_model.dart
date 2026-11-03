@@ -3,35 +3,40 @@ enum TodoRepeatType {
   daily,
   weekly,
   monthly,
+  lastDayOfMonth,
   yearly,
 }
 
 extension TodoRepeatTypeExt on TodoRepeatType {
-  String get optionLabel {
+  String get label {
     switch (this) {
       case TodoRepeatType.none:
         return '반복 안 함';
       case TodoRepeatType.daily:
-        return 'n일마다';
+        return '매일';
       case TodoRepeatType.weekly:
-        return 'n주마다';
+        return '매주';
       case TodoRepeatType.monthly:
-        return 'n개월마다';
+        return '매달';
+      case TodoRepeatType.lastDayOfMonth:
+        return '매달 마지막 날';
       case TodoRepeatType.yearly:
-        return 'n년마다';
+        return '매년';
     }
   }
 
   String get unitLabel {
     switch (this) {
       case TodoRepeatType.none:
-        return '';
+        return '반복 안 함';
       case TodoRepeatType.daily:
         return '일마다';
       case TodoRepeatType.weekly:
         return '주마다';
       case TodoRepeatType.monthly:
         return '개월마다';
+      case TodoRepeatType.lastDayOfMonth:
+        return '매달 말일마다';
       case TodoRepeatType.yearly:
         return '년마다';
     }
@@ -49,6 +54,18 @@ class TodoSubItem {
     this.isChecked = false,
   });
 
+  TodoSubItem copyWith({
+    String? id,
+    String? name,
+    bool? isChecked,
+  }) {
+    return TodoSubItem(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      isChecked: isChecked ?? this.isChecked,
+    );
+  }
+
   Map<String, dynamic> toJson() => {
         'id': id,
         'name': name,
@@ -64,32 +81,27 @@ class TodoSubItem {
 }
 
 class TodoItem {
-  static const List<String> weekdayLabels = [
-    '월',
-    '화',
-    '수',
-    '목',
-    '금',
-    '토',
-    '일',
-  ];
-
   String id;
   String title;
   DateTime? dueDate;
   String? dueTime; // "HH:mm" 형식 (예: "14:30")
-
   TodoRepeatType repeatType;
-  int repeatInterval; // n (기본값 1)
-  List<int> repeatWeekdays; // 1(월) ~ 7(일), weekly일 때 사용
-  DateTime? repeatEndDate; // 반복 종료일 (null이면 무기한 또는 횟수 기준)
-  int? repeatCount; // 총 반복 횟수 (null이면 무기한 또는 종료일 기준)
-  int completedCycles; // 현재까지 완료한 반복 횟수 누적
-  int? anchorDay; // 월/년 반복 시 기준 일자 보존 (예: 31일 말일 보정용)
+  int repeatInterval; // n일/주/개월/년 간격 (기본 1)
+  List<int> repeatWeekdays; // 1(월) ~ 7(일)
+  DateTime? repeatEndDate; // 반복 종료일
+  int? repeatCount; // 총 반복 횟수 제한
+  int completedCycles; // 누적 완료 주기 횟수
+  int? anchorDay; // 말일 보정용 기준 일자 (1~31)
 
   bool isCompleted;
   DateTime? completedAt;
+  DateTime? nextActivationDate; // 완료 시 계산된 다음 주기 활성화 예정일
   List<TodoSubItem> subItems;
+
+  // --- 구글 태스크 양방향 동기화 필드 ---
+  String? googleTaskId;
+  DateTime lastEditedTime;
+  bool isDeleted;
 
   TodoItem({
     required this.id,
@@ -105,32 +117,94 @@ class TodoItem {
     int? anchorDay,
     this.isCompleted = false,
     this.completedAt,
+    this.nextActivationDate,
     List<TodoSubItem>? subItems,
+    this.googleTaskId,
+    DateTime? lastEditedTime,
+    this.isDeleted = false,
   })  : repeatInterval = repeatInterval < 1 ? 1 : repeatInterval,
-        repeatWeekdays =
-            repeatWeekdays != null ? List<int>.from(repeatWeekdays) : [],
-        anchorDay = anchorDay ?? dueDate?.day,
-        subItems = subItems ?? [];
+        repeatWeekdays = List<int>.from(repeatWeekdays ?? const []),
+        anchorDay = anchorDay ??
+            (repeatType == TodoRepeatType.lastDayOfMonth
+                ? 31
+                : dueDate?.day),
+        subItems = subItems ?? [],
+        lastEditedTime = lastEditedTime ?? DateTime.now();
 
   bool get isRepeating => repeatType != TodoRepeatType.none;
-
   bool get hasSubItems => subItems.isNotEmpty;
-
   int get checkedSubItemsCount => subItems.where((i) => i.isChecked).length;
-
   bool get isAllSubItemsChecked =>
       subItems.isNotEmpty && checkedSubItemsCount == subItems.length;
 
-  static int _daysInMonth(int year, int month) {
-    return DateTime.utc(year, month + 1, 0).day;
+  void markUpdated() {
+    lastEditedTime = DateTime.now();
   }
 
-  /// 할 일 카드에 표시할 반복 요약 텍스트 (일정과 동일한 포맷)
+  static int daysInMonth(int year, int month) {
+    return DateTime(year, month + 1, 0).day;
+  }
+
+  TodoItem copyWith({
+    String? id,
+    String? title,
+    DateTime? dueDate,
+    bool clearDueDate = false,
+    String? dueTime,
+    bool clearDueTime = false,
+    TodoRepeatType? repeatType,
+    int? repeatInterval,
+    List<int>? repeatWeekdays,
+    DateTime? repeatEndDate,
+    bool clearRepeatEndDate = false,
+    int? repeatCount,
+    bool clearRepeatCount = false,
+    int? completedCycles,
+    int? anchorDay,
+    bool? isCompleted,
+    DateTime? completedAt,
+    bool clearCompletedAt = false,
+    DateTime? nextActivationDate,
+    bool clearNextActivationDate = false,
+    List<TodoSubItem>? subItems,
+    String? googleTaskId,
+    bool clearGoogleTaskId = false,
+    DateTime? lastEditedTime,
+    bool? isDeleted,
+  }) {
+    return TodoItem(
+      id: id ?? this.id,
+      title: title ?? this.title,
+      dueDate: clearDueDate ? null : (dueDate ?? this.dueDate),
+      dueTime: clearDueTime ? null : (dueTime ?? this.dueTime),
+      repeatType: repeatType ?? this.repeatType,
+      repeatInterval: repeatInterval ?? this.repeatInterval,
+      repeatWeekdays: repeatWeekdays != null
+          ? List<int>.from(repeatWeekdays)
+          : List<int>.from(this.repeatWeekdays),
+      repeatEndDate:
+          clearRepeatEndDate ? null : (repeatEndDate ?? this.repeatEndDate),
+      repeatCount: clearRepeatCount ? null : (repeatCount ?? this.repeatCount),
+      completedCycles: completedCycles ?? this.completedCycles,
+      anchorDay: anchorDay ?? this.anchorDay,
+      isCompleted: isCompleted ?? this.isCompleted,
+      completedAt:
+          clearCompletedAt ? null : (completedAt ?? this.completedAt),
+      nextActivationDate: clearNextActivationDate
+          ? null
+          : (nextActivationDate ?? this.nextActivationDate),
+      subItems: subItems ?? this.subItems.map((e) => e.copyWith()).toList(),
+      googleTaskId:
+          clearGoogleTaskId ? null : (googleTaskId ?? this.googleTaskId),
+      lastEditedTime: lastEditedTime ?? DateTime.now(),
+      isDeleted: isDeleted ?? this.isDeleted,
+    );
+  }
+
   String get repeatSummaryText {
     if (!isRepeating) return '';
     final n = repeatInterval < 1 ? 1 : repeatInterval;
-    final refDate = dueDate ?? DateTime.now();
-    final targetAnchorDay = anchorDay ?? refDate.day;
+    final targetDay = anchorDay ?? dueDate?.day ?? 1;
     String base = '';
 
     switch (repeatType) {
@@ -140,34 +214,39 @@ class TodoItem {
         base = n == 1 ? '매일' : '$n일마다';
         break;
       case TodoRepeatType.weekly:
-        final days =
-            repeatWeekdays.isEmpty ? [refDate.weekday] : repeatWeekdays;
-        final sorted = List<int>.from(days)..sort();
-        final dayStr =
-            sorted.map((d) => weekdayLabels[(d - 1).clamp(0, 6)]).join('·');
-        base = n == 1 ? '매주 $dayStr' : '$n주마다 ($dayStr)';
+        const dayNames = ['', '월', '화', '수', '목', '금', '토', '일'];
+        final sorted = List<int>.from(repeatWeekdays)..sort();
+        final daysStr = sorted
+            .where((d) => d >= 1 && d <= 7)
+            .map((d) => dayNames[d])
+            .join('·');
+        final prefix = n == 1 ? '매주' : '$n주마다';
+        base = daysStr.isNotEmpty ? '$prefix ($daysStr)' : prefix;
         break;
       case TodoRepeatType.monthly:
-        base = n == 1 ? '매달 $targetAnchorDay일' : '$n개월마다 ($targetAnchorDay일)';
+        base = n == 1 ? '매달 $targetDay일' : '$n개월마다 $targetDay일';
+        if (targetDay >= 29) base += ' (말일 보정)';
+        break;
+      case TodoRepeatType.lastDayOfMonth:
+        base = n == 1 ? '매달 마지막 날' : '$n개월마다 마지막 날';
         break;
       case TodoRepeatType.yearly:
-        base = n == 1
-            ? '매년 ${refDate.month}/$targetAnchorDay'
-            : '$n년마다 (${refDate.month}/$targetAnchorDay)';
+        final m = dueDate?.month ?? 1;
+        base = n == 1 ? '매년 $m/$targetDay' : '$n년마다 $m/$targetDay';
         break;
     }
 
-    if (repeatEndDate != null) {
-      base += ' (~${repeatEndDate!.month}/${repeatEndDate!.day})';
-    } else if (repeatCount != null && repeatCount! > 0) {
-      base += ' (총 $repeatCount회)';
+    if (repeatCount != null && repeatCount! > 0) {
+      return '$base · 총 $repeatCount회 중 ${completedCycles + 1}회차';
+    } else if (repeatEndDate != null) {
+      return '$base · ~${repeatEndDate!.month}/${repeatEndDate!.day}까지';
     }
     return base;
   }
 
-  /// 기한 경과 여부 판단
+  /// 마감 기한 경과(Overdue) 여부 판별
   bool isOverdueAt(DateTime now) {
-    if (isCompleted || dueDate == null) return false;
+    if (isDeleted || isCompleted || dueDate == null) return false;
 
     if (dueTime != null && dueTime!.contains(':')) {
       final parts = dueTime!.split(':');
@@ -183,162 +262,203 @@ class TodoItem {
     return now.isAfter(targetDate);
   }
 
-  /// 완료 상태 토글
+  /// 상위 할 일 완료 체크/해제 토글 (세부 사항은 별개 유지하되 완료 시 다음 주기 예정일 계산)
   void toggleCompleted(bool complete, DateTime now) {
-    if (complete && !isCompleted) {
-      completedCycles += 1;
-    } else if (!complete && isCompleted && completedCycles > 0) {
-      completedCycles -= 1;
-    }
-
     isCompleted = complete;
     if (complete) {
       completedAt = now;
-      if (hasSubItems) {
-        for (final sub in subItems) {
-          sub.isChecked = true;
-        }
+      if (isRepeating) {
+        final baseDate = dueDate ?? DateTime(now.year, now.month, now.day);
+        nextActivationDate = _calculateNextCycleDate(baseDate);
+      } else {
+        nextActivationDate = null;
       }
     } else {
       completedAt = null;
+      nextActivationDate = null;
     }
+    markUpdated();
   }
 
-  /// 현재 시각(now) 및 설정된 하루 시작 시간(dailyResetTime) 기준으로 다음 주기에 재활성화할지 판단
-  bool shouldReactivateAt(DateTime now, {String dailyResetTime = '00:00'}) {
-    if (!isCompleted || !isRepeating || completedAt == null) {
-      return false;
+  DateTime? _calculateNextCycleDate(DateTime current) {
+    if (!isRepeating) return null;
+    final n = repeatInterval < 1 ? 1 : repeatInterval;
+    final baseDay = repeatType == TodoRepeatType.lastDayOfMonth
+        ? 31
+        : (anchorDay ?? current.day);
+
+    DateTime nextDate;
+    switch (repeatType) {
+      case TodoRepeatType.none:
+        return null;
+      case TodoRepeatType.daily:
+        nextDate = DateTime(current.year, current.month, current.day)
+            .add(Duration(days: n));
+        break;
+      case TodoRepeatType.weekly:
+        final weekdays =
+            (repeatWeekdays.isEmpty ? <int>[current.weekday] : repeatWeekdays)
+                .toSet()
+                .toList()
+              ..sort();
+        int? nextWeekdayInSameWeek;
+        for (final w in weekdays) {
+          if (w > current.weekday) {
+            nextWeekdayInSameWeek = w;
+            break;
+          }
+        }
+        if (nextWeekdayInSameWeek != null) {
+          final diff = nextWeekdayInSameWeek - current.weekday;
+          nextDate = DateTime(current.year, current.month, current.day)
+              .add(Duration(days: diff));
+        } else {
+          final currentMonday =
+              DateTime(current.year, current.month, current.day)
+                  .subtract(Duration(days: current.weekday - 1));
+          final nextCycleMonday = currentMonday.add(Duration(days: 7 * n));
+          final firstWeekday = weekdays.first;
+          nextDate = nextCycleMonday.add(Duration(days: firstWeekday - 1));
+        }
+        break;
+      case TodoRepeatType.monthly:
+      case TodoRepeatType.lastDayOfMonth:
+        final totalMonths = current.year * 12 + (current.month - 1) + n;
+        final targetYear = totalMonths ~/ 12;
+        final targetMonth = (totalMonths % 12) + 1;
+        final maxDay = daysInMonth(targetYear, targetMonth);
+        final clampedDay = baseDay > maxDay ? maxDay : baseDay;
+        nextDate = DateTime(targetYear, targetMonth, clampedDay);
+        break;
+      case TodoRepeatType.yearly:
+        final targetYear = current.year + n;
+        final targetMonth = current.month;
+        final maxDay = daysInMonth(targetYear, targetMonth);
+        final clampedDay = baseDay > maxDay ? maxDay : baseDay;
+        nextDate = DateTime(targetYear, targetMonth, clampedDay);
+        break;
     }
 
-    // 1) 반복 횟수 종료 조건 확인
-    if (repeatCount != null &&
-        repeatCount! > 0 &&
-        completedCycles >= repeatCount!) {
-      return false;
-    }
-
-    final baseDate = dueDate ??
-        DateTime(completedAt!.year, completedAt!.month, completedAt!.day);
-    final nextCycleDate = _calculateNextCycleDate(baseDate);
-    if (nextCycleDate == null) return false;
-
-    // 2) 반복 종료 날짜 조건 확인
     if (repeatEndDate != null) {
-      final endOnly = DateTime(
+      final endNormalized = DateTime(
         repeatEndDate!.year,
         repeatEndDate!.month,
         repeatEndDate!.day,
       );
-      final nextOnly = DateTime(
-        nextCycleDate.year,
-        nextCycleDate.month,
-        nextCycleDate.day,
-      );
-      if (nextOnly.isAfter(endOnly)) {
-        return false;
+      if (nextDate.isAfter(endNormalized)) {
+        return null;
       }
     }
 
-    final parts = dailyResetTime.split(':');
-    final resetH = (int.tryParse(parts.firstOrNull ?? '0') ?? 0).clamp(0, 23);
-    final resetM =
-        (int.tryParse(parts.length > 1 ? parts[1] : '0') ?? 0).clamp(0, 59);
-
-    var threshold = DateTime(
-      nextCycleDate.year,
-      nextCycleDate.month,
-      nextCycleDate.day,
-      resetH,
-      resetM,
-    );
-
-    // 만약 사용자가 미래의 할 일을 미리 체크해 둔 경우, 적어도 완료 시각 이후의 다음 기준 시각에 복귀
-    while (!threshold.isAfter(completedAt!)) {
-      threshold = threshold.add(const Duration(days: 1));
+    if (repeatCount != null && repeatCount! > 0) {
+      if (completedCycles + 1 >= repeatCount!) {
+        return null;
+      }
     }
+
+    return nextDate;
+  }
+
+  /// 완료된 반복 할 일이 다음 주기 활성화 시점(하루 시작 시간 기준)에 도달했는지 판별
+  bool shouldReactivateAt(DateTime now, {String dailyResetTime = '00:00'}) {
+    if (isDeleted || !isCompleted || !isRepeating) return false;
+
+    final targetDate = nextActivationDate ??
+        (dueDate != null ? _calculateNextCycleDate(dueDate!) : null);
+    if (targetDate == null) return false;
+
+    final parts = dailyResetTime.split(':');
+    final resetHour = parts.isNotEmpty ? (int.tryParse(parts[0]) ?? 0) : 0;
+    final resetMinute = parts.length > 1 ? (int.tryParse(parts[1]) ?? 0) : 0;
+
+    final threshold = DateTime(
+      targetDate.year,
+      targetDate.month,
+      targetDate.day,
+      resetHour,
+      resetMinute,
+    );
 
     return !now.isBefore(threshold);
   }
 
-  /// 다음 주기 마감일로 업데이트하고 미완료 상태로 되돌리기
+  /// 다음 주기 마감일로 갱신하고 [진행 중] 상태로 복귀
   void reactivateForNextCycle(DateTime now) {
-    final baseDate = dueDate ??
-        (completedAt != null
-            ? DateTime(completedAt!.year, completedAt!.month, completedAt!.day)
-            : DateTime(now.year, now.month, now.day));
+    final targetDate = nextActivationDate ??
+        (dueDate != null ? _calculateNextCycleDate(dueDate!) : null);
+    if (targetDate == null) return;
 
-    final nextDate = _calculateNextCycleDate(baseDate);
-    if (nextDate == null) return;
-
-    if (repeatEndDate != null) {
-      final endOnly = DateTime(
-        repeatEndDate!.year,
-        repeatEndDate!.month,
-        repeatEndDate!.day,
-      );
-      final nextOnly = DateTime(nextDate.year, nextDate.month, nextDate.day);
-      if (nextOnly.isAfter(endOnly)) return;
-    }
-
-    if (dueDate != null) {
-      dueDate = nextDate;
-    }
+    dueDate = targetDate;
+    nextActivationDate = null;
+    completedCycles += 1;
     isCompleted = false;
     completedAt = null;
-    if (hasSubItems) {
-      for (final sub in subItems) {
-        sub.isChecked = false;
-      }
+    for (final sub in subItems) {
+      sub.isChecked = false;
     }
+    markUpdated();
   }
 
-  /// 다음 주기 날짜 계산 (n일/주/월/년 간격, 요일 다중 선택, 말일 보정 반영)
-  DateTime? _calculateNextCycleDate(DateTime current) {
-    final n = repeatInterval < 1 ? 1 : repeatInterval;
-    final cleanCurrent = DateTime(current.year, current.month, current.day);
-    final targetDay = anchorDay ?? cleanCurrent.day;
+  /// 기존 커밋 호환용: 확인과 재활성화를 한 번에 수행하고 변경 여부(bool) 반환
+  bool checkAndReactivateIfDue(DateTime now, {String dailyResetTime = '00:00'}) {
+    if (shouldReactivateAt(now, dailyResetTime: dailyResetTime)) {
+      reactivateForNextCycle(now);
+      return true;
+    }
+    return false;
+  }
 
-    switch (repeatType) {
-      case TodoRepeatType.none:
-        return null;
+  // --- 구글 태스크 설명란(Notes) 텍스트 포맷팅 및 역파싱 ---
+  String toGoogleTaskNotes() {
+    final buffer = StringBuffer();
+    if (dueTime != null && dueTime!.trim().isNotEmpty) {
+      buffer.writeln('⏰ 시간: ${dueTime!.trim()}');
+    }
+    if (subItems.isNotEmpty) {
+      if (buffer.isNotEmpty) buffer.writeln();
+      for (final sub in subItems) {
+        buffer.writeln('${sub.isChecked ? "[x]" : "[ ]"} ${sub.name}');
+      }
+    }
+    return buffer.toString().trim();
+  }
 
-      case TodoRepeatType.daily:
-        return cleanCurrent.add(Duration(days: n));
+  void applyFromGoogleTaskNotes(String? notes) {
+    if (notes == null || notes.trim().isEmpty) return;
+    final lines = notes.split('\n');
+    final parsedSubs = <TodoSubItem>[];
+    String? parsedTime;
 
-      case TodoRepeatType.weekly:
-        final days =
-            (repeatWeekdays.isEmpty ? [cleanCurrent.weekday] : repeatWeekdays)
-                .toSet()
-                .toList()
-              ..sort();
-
-        // 같은 주 내에 현재 요일보다 뒤에 남은 선택 요일이 있는지 확인
-        for (final w in days) {
-          if (w > cleanCurrent.weekday) {
-            return cleanCurrent.add(Duration(days: w - cleanCurrent.weekday));
-          }
+    for (final rawLine in lines) {
+      final line = rawLine.trim();
+      if (line.startsWith('⏰ 시간:')) {
+        parsedTime = line.replaceFirst('⏰ 시간:', '').trim();
+      } else if (line.startsWith('[x]') || line.startsWith('[X]')) {
+        final name = line.substring(3).trim();
+        if (name.isNotEmpty) {
+          parsedSubs.add(TodoSubItem(
+            id: '${DateTime.now().microsecondsSinceEpoch}_${parsedSubs.length}',
+            name: name,
+            isChecked: true,
+          ));
         }
+      } else if (line.startsWith('[ ]')) {
+        final name = line.substring(3).trim();
+        if (name.isNotEmpty) {
+          parsedSubs.add(TodoSubItem(
+            id: '${DateTime.now().microsecondsSinceEpoch}_${parsedSubs.length}',
+            name: name,
+            isChecked: false,
+          ));
+        }
+      }
+    }
 
-        // 없으면 n주 뒤의 첫 번째 선택 요일로 이동
-        final currentMonday =
-            cleanCurrent.subtract(Duration(days: cleanCurrent.weekday - 1));
-        final nextCycleMonday = currentMonday.add(Duration(days: 7 * n));
-        return nextCycleMonday.add(Duration(days: days.first - 1));
-
-      case TodoRepeatType.monthly:
-        final totalMonths = (cleanCurrent.year * 12 + (cleanCurrent.month - 1)) + n;
-        final nextYear = totalMonths ~/ 12;
-        final nextMonth = (totalMonths % 12) + 1;
-        final maxDay = _daysInMonth(nextYear, nextMonth);
-        final clampedDay = targetDay > maxDay ? maxDay : targetDay;
-        return DateTime(nextYear, nextMonth, clampedDay);
-
-      case TodoRepeatType.yearly:
-        final nextYear = cleanCurrent.year + n;
-        final nextMonth = cleanCurrent.month;
-        final maxDay = _daysInMonth(nextYear, nextMonth);
-        final clampedDay = targetDay > maxDay ? maxDay : targetDay;
-        return DateTime(nextYear, nextMonth, clampedDay);
+    if (parsedTime != null && parsedTime.isNotEmpty) {
+      dueTime = parsedTime;
+    }
+    if (parsedSubs.isNotEmpty) {
+      subItems = parsedSubs;
     }
   }
 
@@ -347,7 +467,7 @@ class TodoItem {
         'title': title,
         'dueDate': dueDate?.toIso8601String(),
         'dueTime': dueTime,
-        'repeatType': repeatType.name,
+        'repeatType': repeatType.index,
         'repeatInterval': repeatInterval,
         'repeatWeekdays': repeatWeekdays,
         'repeatEndDate': repeatEndDate?.toIso8601String(),
@@ -356,57 +476,30 @@ class TodoItem {
         'anchorDay': anchorDay,
         'isCompleted': isCompleted,
         'completedAt': completedAt?.toIso8601String(),
+        'nextActivationDate': nextActivationDate?.toIso8601String(),
         'subItems': subItems.map((e) => e.toJson()).toList(),
+        'googleTaskId': googleTaskId,
+        'lastEditedTime': lastEditedTime.toIso8601String(),
+        'isDeleted': isDeleted,
       };
 
   factory TodoItem.fromJson(Map<String, dynamic> json) {
     final parsedDueDate = json['dueDate'] != null
-        ? DateTime.tryParse(json['dueDate'].toString())
+        ? DateTime.tryParse(json['dueDate'] as String)
         : null;
 
-    TodoRepeatType parsedRepeatType = TodoRepeatType.none;
-    int? parsedAnchorDay = (json['anchorDay'] as num?)?.toInt();
-
-    final rawRepeat = json['repeatType'];
-    if (rawRepeat is String) {
-      if (rawRepeat == 'lastDayOfMonth') {
-        parsedRepeatType = TodoRepeatType.monthly;
-        parsedAnchorDay ??= 31;
-      } else {
-        parsedRepeatType = TodoRepeatType.values.firstWhere(
-          (e) => e.name == rawRepeat,
-          orElse: () => TodoRepeatType.none,
-        );
-      }
-    } else if (rawRepeat is num) {
-      // 구버전 enum index 호환: 0:none, 1:daily, 2:weekly, 3:monthly, 4:lastDayOfMonth, 5:yearly
-      final idx = rawRepeat.toInt();
-      switch (idx) {
-        case 1:
-          parsedRepeatType = TodoRepeatType.daily;
-          break;
-        case 2:
-          parsedRepeatType = TodoRepeatType.weekly;
-          break;
-        case 3:
-          parsedRepeatType = TodoRepeatType.monthly;
-          break;
-        case 4:
-          parsedRepeatType = TodoRepeatType.monthly;
-          parsedAnchorDay ??= 31;
-          break;
-        case 5:
-          parsedRepeatType = TodoRepeatType.yearly;
-          break;
-        default:
-          parsedRepeatType = TodoRepeatType.none;
-      }
+    TodoRepeatType parsedType = TodoRepeatType.none;
+    if (json['repeatType'] is int) {
+      final rawIdx = (json['repeatType'] as int)
+          .clamp(0, TodoRepeatType.values.length - 1);
+      parsedType = TodoRepeatType.values[rawIdx];
+    } else if (json['repeatType'] is String) {
+      final str = json['repeatType'] as String;
+      parsedType = TodoRepeatType.values.firstWhere(
+        (e) => e.name == str,
+        orElse: () => TodoRepeatType.none,
+      );
     }
-
-    final parsedWeekdays = (json['repeatWeekdays'] as List<dynamic>?)
-            ?.map((e) => (e as num).toInt())
-            .toList() ??
-        [];
 
     return TodoItem(
       id: (json['id'] as String?) ??
@@ -414,28 +507,35 @@ class TodoItem {
       title: (json['title'] as String?) ?? '',
       dueDate: parsedDueDate,
       dueTime: json['dueTime'] as String?,
-      repeatType: parsedRepeatType,
-      repeatInterval:
-          ((json['repeatInterval'] as num?)?.toInt() ?? 1).clamp(1, 999),
-      repeatWeekdays: parsedWeekdays,
+      repeatType: parsedType,
+      repeatInterval: (json['repeatInterval'] as num?)?.toInt() ?? 1,
+      repeatWeekdays: ((json['repeatWeekdays'] as List<dynamic>?) ?? const [])
+          .map((e) => (e as num).toInt())
+          .toList(),
       repeatEndDate: json['repeatEndDate'] != null
-          ? DateTime.tryParse(json['repeatEndDate'].toString())
+          ? DateTime.tryParse(json['repeatEndDate'] as String)
           : null,
       repeatCount: (json['repeatCount'] as num?)?.toInt(),
-      completedCycles:
-          ((json['completedCycles'] as num?)?.toInt() ?? 0).clamp(0, 999999),
-      anchorDay: parsedAnchorDay ?? parsedDueDate?.day,
+      completedCycles: (json['completedCycles'] as num?)?.toInt() ?? 0,
+      anchorDay: (json['anchorDay'] as num?)?.toInt() ?? parsedDueDate?.day,
       isCompleted: (json['isCompleted'] as bool?) ?? false,
       completedAt: json['completedAt'] != null
-          ? DateTime.tryParse(json['completedAt'].toString())
+          ? DateTime.tryParse(json['completedAt'] as String)
           : null,
-      subItems: (json['subItems'] as List<dynamic>? ?? [])
-          .map(
-            (e) => TodoSubItem.fromJson(
-              Map<String, dynamic>.from(e as Map),
-            ),
-          )
+      nextActivationDate: json['nextActivationDate'] != null
+          ? DateTime.tryParse(json['nextActivationDate'] as String)
+          : null,
+      subItems: ((json['subItems'] as List<dynamic>?) ?? const [])
+          .map((e) => TodoSubItem.fromJson(
+                Map<String, dynamic>.from(e as Map),
+              ))
           .toList(),
+      googleTaskId: json['googleTaskId'] as String?,
+      lastEditedTime: json['lastEditedTime'] != null
+          ? (DateTime.tryParse(json['lastEditedTime'] as String) ??
+              DateTime.now())
+          : DateTime.now(),
+      isDeleted: (json['isDeleted'] as bool?) ?? false,
     );
   }
 }
