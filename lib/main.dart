@@ -1,3 +1,5 @@
+// ignore_for_file: unused_field
+
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -35,9 +37,9 @@ class BygoApp extends StatefulWidget {
 }
 
 class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
-  static const String _prefGoogleCalSync = 'bygo_google_calendar_sync_enabled';
-  static const String _prefGoogleTaskSync = 'bygo_google_tasks_sync_enabled';
-  static const String _prefGoogleEmail = 'bygo_google_connected_email';
+  //static const String _prefGoogleCalSync = 'bygo_google_calendar_sync_enabled';
+  //static const String _prefGoogleTaskSync = 'bygo_google_tasks_sync_enabled';
+  //static const String _prefGoogleEmail = 'bygo_google_connected_email';
 
   final StorageService _storage = StorageService();
   final PageController _pageController = PageController();
@@ -63,7 +65,7 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
   bool _isGoogleTasksSynced = false;
   bool _isSyncingCalendar = false;
   bool _isSyncingTasks = false;
-  String? _googleConnectedEmail;
+ String? _googleConnectedEmail;
 
   // 자동 포커싱 및 일정 시간 초기화 상태 관리
   String? _selectedSituationId;
@@ -230,6 +232,7 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
     }
   }
 
+  // ignore: unused_element
   Future<void> _toggleGoogleCalendarSync(bool enabled) async {
     if (enabled) {
       final email =
@@ -256,6 +259,7 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
     }
   }
 
+  // ignore: unused_element
   Future<void> _toggleGoogleTasksSync(bool enabled) async {
     if (enabled) {
       final email =
@@ -282,6 +286,7 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
     }
   }
 
+/*
   void _showGoogleSyncSettingsDialog(BuildContext context) {
     showDialog<void>(
       context: context,
@@ -340,6 +345,7 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
       ),
     );
   }
+  */
 
   // ===========================================================================
   // 외출 준비 라이프사이클 엔진 (일일 리셋 + 반복 할 일 복귀 + 준비시간 포커싱 + 정각 리셋)
@@ -1013,7 +1019,8 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
                   ),
                   centerTitle: false,
                   actions: [
-                    // 캘린더 탭(0)이고 구글 캘린더 연동 활성화 시 동기화 버튼 표시
+                    // 캘린더 탭(0)이고 구글 캘린더 연동 활성화 시 동기화 버튼
+                    /*
                     if (_currentIndex == 0 && _isGoogleCalendarSynced)
                       IconButton(
                         tooltip: 'Google 캘린더 동기화',
@@ -1056,6 +1063,7 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
                       onPressed: () =>
                           _showGoogleSyncSettingsDialog(innerContext),
                     ),
+                    */
                   ],
                 ),
                 body: Column(

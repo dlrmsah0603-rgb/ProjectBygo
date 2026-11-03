@@ -1,18 +1,24 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../models/todo_model.dart';
-
-enum _TodoRepeatEndMode { forever, untilDate, count }
+import '../services/google_sync_service.dart';
+import 'settings_screen.dart';
 
 class TodoScreen extends StatefulWidget {
   final List<TodoItem> todos;
   final bool showTips;
+  final bool? isGoogleTasksSynced;
+  final bool isSyncingTasks;
+  final VoidCallback? onSyncGoogleTasks;
   final ValueChanged<List<TodoItem>> onTodosChanged;
 
   const TodoScreen({
     super.key,
     required this.todos,
     this.showTips = true,
+    this.isGoogleTasksSynced,
+    this.isSyncingTasks = false,
+    this.onSyncGoogleTasks,
     required this.onTodosChanged,
   });
 
@@ -31,80 +37,100 @@ class _TodoScreenState extends State<TodoScreen> {
     '일',
   ];
 
-  bool _isInProgressExpanded = true;
+  bool _isOngoingExpanded = true;
   bool _isCompletedExpanded = false;
-  final Set<String> _expandedSubItemTodoIds = <String>{};
+  bool _localSyncing = false;
+
+  @override
+  void initState() {
+    super.initState();
+    SettingsScreen.ensureSyncPrefsLoaded();
+  }
+
+  List<TodoItem> get _activeTodos =>
+      widget.todos.where((t) => !t.isDeleted).toList();
 
   void _notifyParent() {
     setState(() {});
     widget.onTodosChanged(widget.todos);
   }
 
-  List<TodoItem> get _inProgressTodos {
-    final list = widget.todos.where((t) => !t.isCompleted).toList();
-    list.sort(_compareTodosByDeadline);
-    return list;
-  }
-
-  List<TodoItem> get _completedTodos {
-    final list = widget.todos.where((t) => t.isCompleted).toList();
-    list.sort((a, b) {
-      final aTime = a.completedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
-      final bTime = b.completedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
-      return bTime.compareTo(aTime);
-    });
-    return list;
-  }
-
-  int _compareTodosByDeadline(TodoItem a, TodoItem b) {
-    if (a.dueDate == null && b.dueDate == null) {
-      return a.title.compareTo(b.title);
+  Future<void> _triggerTasksSync() async {
+    if (widget.onSyncGoogleTasks != null) {
+      widget.onSyncGoogleTasks!();
+      return;
     }
-    if (a.dueDate == null) return 1;
-    if (b.dueDate == null) return -1;
+    if (_localSyncing) return;
+    HapticFeedback.selectionClick();
+    setState(() => _localSyncing = true);
 
-    final aDateOnly =
-        DateTime(a.dueDate!.year, a.dueDate!.month, a.dueDate!.day);
-    final bDateOnly =
-        DateTime(b.dueDate!.year, b.dueDate!.month, b.dueDate!.day);
-    final dateCmp = aDateOnly.compareTo(bDateOnly);
-    if (dateCmp != 0) return dateCmp;
-
-    final aTime = (a.dueTime != null && a.dueTime!.isNotEmpty)
-        ? a.dueTime!
-        : '99:99';
-    final bTime = (b.dueTime != null && b.dueTime!.isNotEmpty)
-        ? b.dueTime!
-        : '99:99';
-    return aTime.compareTo(bTime);
+    try {
+      final result = await GoogleSyncService.instance.syncTodos(
+        localTodos: widget.todos,
+      );
+      if (!mounted) return;
+      setState(() {
+        widget.todos
+          ..clear()
+          ..addAll(result.items);
+        _localSyncing = false;
+      });
+      widget.onTodosChanged(widget.todos);
+      ScaffoldMessenger.of(context).clearSnackBars();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(result.message),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _localSyncing = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('구글 태스크 동기화 실패: $e')),
+      );
+    }
   }
 
-  String _formatDateHeader(DateTime? date) {
-    if (date == null) return '기한 없음';
-    final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
-    final target = DateTime(date.year, date.month, date.day);
-    final diff = target.difference(today).inDays;
+  List<TodoItem> _sortTodos(List<TodoItem> list) {
+    final copy = List<TodoItem>.from(list);
+    copy.sort((a, b) {
+      if (a.dueDate == null && b.dueDate == null) return 0;
+      if (a.dueDate == null) return 1; // 기한 없음은 최하단 배치
+      if (b.dueDate == null) return -1;
 
-    final weekday = _weekdayLabels[(target.weekday - 1).clamp(0, 6)];
-    final baseStr = '${target.month}월 ${target.day}일 ($weekday)';
+      final da = DateTime(a.dueDate!.year, a.dueDate!.month, a.dueDate!.day);
+      final db = DateTime(b.dueDate!.year, b.dueDate!.month, b.dueDate!.day);
+      final cmp = da.compareTo(db);
+      if (cmp != 0) return cmp;
 
-    if (diff == 0) return '오늘 · $baseStr';
-    if (diff == 1) return '내일 · $baseStr';
-    if (diff == -1) return '어제 · $baseStr';
-    if (diff < -1) return '기한 지남 · $baseStr';
-    return baseStr;
+      final ta = a.dueTime ?? '23:59';
+      final tb = b.dueTime ?? '23:59';
+      return ta.compareTo(tb);
+    });
+    return copy;
   }
 
-  void _deleteTodoWithUndo(TodoItem todo) {
-    final idx = widget.todos.indexOf(todo);
-    if (idx == -1) return;
+  void _deleteTodo(TodoItem todo) {
+    final snapshot = widget.todos
+        .map((t) => t.copyWith(lastEditedTime: t.lastEditedTime))
+        .toList();
 
     HapticFeedback.mediumImpact();
     setState(() {
-      widget.todos.removeAt(idx);
+      if (todo.googleTaskId != null && todo.googleTaskId!.isNotEmpty) {
+        final idx = widget.todos.indexWhere((t) => t.id == todo.id);
+        if (idx != -1) {
+          widget.todos[idx] = todo.copyWith(
+            isDeleted: true,
+            lastEditedTime: DateTime.now(),
+          );
+        }
+      } else {
+        widget.todos.removeWhere((t) => t.id == todo.id);
+      }
     });
-    widget.onTodosChanged(widget.todos);
+    _notifyParent();
 
     ScaffoldMessenger.of(context).clearSnackBars();
     ScaffoldMessenger.of(context).showSnackBar(
@@ -115,11 +141,12 @@ class _TodoScreenState extends State<TodoScreen> {
           label: '실행 취소',
           onPressed: () {
             HapticFeedback.lightImpact();
-            final insertIdx = idx.clamp(0, widget.todos.length);
             setState(() {
-              widget.todos.insert(insertIdx, todo);
+              widget.todos
+                ..clear()
+                ..addAll(snapshot);
             });
-            widget.onTodosChanged(widget.todos);
+            _notifyParent();
           },
         ),
       ),
@@ -130,72 +157,40 @@ class _TodoScreenState extends State<TodoScreen> {
     HapticFeedback.selectionClick();
     final titleController =
         TextEditingController(text: existing?.title ?? '');
-    DateTime? selectedDueDate = existing?.dueDate;
-    String? selectedDueTime = existing?.dueTime;
-
-    // 일정과 동일한 반복 설정 상태
-    TodoRepeatType selectedRepeatType =
-        existing?.repeatType ?? TodoRepeatType.none;
+    final subItemController = TextEditingController();
     final intervalController = TextEditingController(
       text: (existing?.repeatInterval ?? 1).toString(),
     );
-
-    final defaultWeekday = (selectedDueDate ?? DateTime.now()).weekday;
-    final List<int> selectedWeekdays = existing != null &&
-            existing.repeatWeekdays.isNotEmpty
-        ? List<int>.from(existing.repeatWeekdays)
-        : [defaultWeekday];
-
-    _TodoRepeatEndMode endMode = _TodoRepeatEndMode.forever;
-    if (existing?.repeatEndDate != null) {
-      endMode = _TodoRepeatEndMode.untilDate;
-    } else if (existing?.repeatCount != null && existing!.repeatCount! > 0) {
-      endMode = _TodoRepeatEndMode.count;
-    }
-
-    DateTime selectedEndDate = existing?.repeatEndDate ??
-        (selectedDueDate ?? DateTime.now()).add(const Duration(days: 30));
     final countController = TextEditingController(
       text: (existing?.repeatCount ?? 10).toString(),
     );
 
-    // 세부 항목 편집 상태
-    final List<TodoSubItem> tempSubItems = existing != null
-        ? existing.subItems
-            .map(
-              (s) => TodoSubItem(
-                id: s.id,
-                name: s.name,
-                isChecked: s.isChecked,
-              ),
-            )
-            .toList()
-        : <TodoSubItem>[];
-    final subItemInputController = TextEditingController();
+    DateTime? selectedDueDate = existing?.dueDate;
+    String? selectedDueTime = existing?.dueTime;
+    TodoRepeatType repeatType = existing?.repeatType ?? TodoRepeatType.none;
+    final List<int> repeatWeekdays = List<int>.from(
+      existing?.repeatWeekdays.isNotEmpty == true
+          ? existing!.repeatWeekdays
+          : <int>[(selectedDueDate ?? DateTime.now()).weekday],
+    );
 
-    showDialog(
+    String repeatEndMode = 'infinite';
+    if (existing?.repeatCount != null && existing!.repeatCount! > 0) {
+      repeatEndMode = 'count';
+    } else if (existing?.repeatEndDate != null) {
+      repeatEndMode = 'endDate';
+    }
+    DateTime repeatEndDate = existing?.repeatEndDate ??
+        (selectedDueDate ?? DateTime.now()).add(const Duration(days: 30));
+
+    final List<TodoSubItem> subItems =
+        existing?.subItems.map((e) => e.copyWith()).toList() ?? <TodoSubItem>[];
+
+    showDialog<void>(
       context: context,
       builder: (ctx) {
         return StatefulBuilder(
           builder: (ctx, setDialogState) {
-            final isRepeating = selectedRepeatType != TodoRepeatType.none;
-            final refStartDate = selectedDueDate ?? DateTime.now();
-
-            void addSubItem() {
-              final text = subItemInputController.text.trim();
-              if (text.isEmpty) return;
-              HapticFeedback.lightImpact();
-              setDialogState(() {
-                tempSubItems.add(
-                  TodoSubItem(
-                    id: DateTime.now().microsecondsSinceEpoch.toString(),
-                    name: text,
-                  ),
-                );
-                subItemInputController.clear();
-              });
-            }
-
             return AlertDialog(
               title: Text(existing == null ? '새 할 일 추가' : '할 일 수정'),
               content: SizedBox(
@@ -209,419 +204,333 @@ class _TodoScreenState extends State<TodoScreen> {
                         controller: titleController,
                         autofocus: existing == null,
                         decoration: const InputDecoration(
-                          labelText: '할 일 제목',
+                          labelText: '할 일 제목 *',
                           border: OutlineInputBorder(),
-                          isDense: true,
                         ),
                       ),
                       const SizedBox(height: 12),
 
-                      // 마감 날짜 및 시간 선택
+                      // 마감 기한 날짜 선택 (미지정 시 '기한 없음')
                       Row(
                         children: [
                           Expanded(
                             child: OutlinedButton.icon(
                               onPressed: () async {
-                                HapticFeedback.selectionClick();
-                                final now = DateTime.now();
                                 final picked = await showDatePicker(
                                   context: ctx,
-                                  initialDate: selectedDueDate ?? now,
-                                  firstDate: DateTime(2020, 1, 1),
-                                  lastDate: DateTime(2035, 12, 31),
+                                  initialDate:
+                                      selectedDueDate ?? DateTime.now(),
+                                  firstDate: DateTime(2020),
+                                  lastDate: DateTime(2035),
                                 );
                                 if (picked != null) {
                                   setDialogState(() {
                                     selectedDueDate = picked;
-                                    if (selectedEndDate.isBefore(picked)) {
-                                      selectedEndDate =
-                                          picked.add(const Duration(days: 30));
+                                    if (!repeatWeekdays
+                                        .contains(picked.weekday)) {
+                                      repeatWeekdays
+                                        ..clear()
+                                        ..add(picked.weekday);
                                     }
                                   });
                                 }
                               },
-                              icon: const Icon(Icons.event_outlined, size: 16),
+                              icon: const Icon(Icons.event, size: 16),
                               label: Text(
                                 selectedDueDate == null
-                                    ? '기한 없음'
-                                    : '${selectedDueDate!.year}.${selectedDueDate!.month.toString().padLeft(2, '0')}.${selectedDueDate!.day.toString().padLeft(2, '0')}',
-                                overflow: TextOverflow.ellipsis,
+                                    ? '마감일: 기한 없음'
+                                    : '마감일: ${selectedDueDate!.year}.${selectedDueDate!.month}.${selectedDueDate!.day}',
                               ),
                             ),
                           ),
                           if (selectedDueDate != null)
                             IconButton(
-                              tooltip: '마감일 해제',
-                              visualDensity: VisualDensity.compact,
-                              icon: const Icon(Icons.clear, size: 18),
+                              tooltip: '기한 없음으로 변경',
+                              icon: const Icon(Icons.close, size: 18),
                               onPressed: () {
-                                HapticFeedback.selectionClick();
                                 setDialogState(() {
                                   selectedDueDate = null;
                                   selectedDueTime = null;
-                                });
-                              },
-                            ),
-                          const SizedBox(width: 6),
-                          Expanded(
-                            child: OutlinedButton.icon(
-                              onPressed: selectedDueDate == null
-                                  ? null
-                                  : () async {
-                                      HapticFeedback.selectionClick();
-                                      TimeOfDay initialTime =
-                                          const TimeOfDay(hour: 18, minute: 0);
-                                      if (selectedDueTime != null &&
-                                          selectedDueTime!.contains(':')) {
-                                        final parts =
-                                            selectedDueTime!.split(':');
-                                        initialTime = TimeOfDay(
-                                          hour: int.tryParse(parts[0]) ?? 18,
-                                          minute: int.tryParse(parts[1]) ?? 0,
-                                        );
-                                      }
-                                      final picked = await showTimePicker(
-                                        context: ctx,
-                                        initialTime: initialTime,
-                                      );
-                                      if (picked != null) {
-                                        setDialogState(() {
-                                          selectedDueTime =
-                                              '${picked.hour.toString().padLeft(2, '0')}:${picked.minute.toString().padLeft(2, '0')}';
-                                        });
-                                      }
-                                    },
-                              icon: const Icon(Icons.access_time, size: 16),
-                              label: Text(
-                                selectedDueTime == null
-                                    ? '시간 미지정'
-                                    : selectedDueTime!,
-                              ),
-                            ),
-                          ),
-                          if (selectedDueTime != null)
-                            IconButton(
-                              tooltip: '시간 해제',
-                              visualDensity: VisualDensity.compact,
-                              icon: const Icon(Icons.clear, size: 18),
-                              onPressed: () {
-                                HapticFeedback.selectionClick();
-                                setDialogState(() {
-                                  selectedDueTime = null;
+                                  repeatType = TodoRepeatType.none;
                                 });
                               },
                             ),
                         ],
                       ),
-                      const SizedBox(height: 12),
 
-                      // 반복 설정 (일정과 동일한 방식)
-                      DropdownButtonFormField<TodoRepeatType>(
-                        initialValue: selectedRepeatType,
-                        decoration: const InputDecoration(
-                          labelText: '반복 설정',
-                          prefixIcon: Icon(Icons.repeat),
-                          border: OutlineInputBorder(),
-                          isDense: true,
-                        ),
-                        items: TodoRepeatType.values.map((type) {
-                          return DropdownMenuItem<TodoRepeatType>(
-                            value: type,
-                            child: Text(type.optionLabel),
-                          );
-                        }).toList(),
-                        onChanged: (val) {
-                          if (val == null) return;
-                          HapticFeedback.selectionClick();
-                          setDialogState(() {
-                            selectedRepeatType = val;
-                            if (val != TodoRepeatType.none &&
-                                selectedDueDate == null) {
-                              final now = DateTime.now();
-                              selectedDueDate =
-                                  DateTime(now.year, now.month, now.day);
-                            }
-                            if (val == TodoRepeatType.weekly &&
-                                selectedWeekdays.isEmpty) {
-                              selectedWeekdays.add(
-                                (selectedDueDate ?? DateTime.now()).weekday,
-                              );
-                            }
-                          });
-                        },
-                      ),
-
-                      if (isRepeating) ...[
-                        const SizedBox(height: 12),
-                        Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: Theme.of(context)
-                                .colorScheme
-                                .surfaceContainerHighest
-                                .withValues(alpha: 0.45),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(
-                              color: Colors.grey.withValues(alpha: 0.3),
-                            ),
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                children: [
-                                  const Text(
-                                    '반복 간격 (n):',
-                                    style: TextStyle(
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 10),
-                                  SizedBox(
-                                    width: 72,
-                                    child: TextField(
-                                      controller: intervalController,
-                                      keyboardType: TextInputType.number,
-                                      textAlign: TextAlign.center,
-                                      inputFormatters: [
-                                        FilteringTextInputFormatter.digitsOnly,
-                                      ],
-                                      decoration: const InputDecoration(
-                                        isDense: true,
-                                        contentPadding: EdgeInsets.symmetric(
-                                          horizontal: 8,
-                                          vertical: 8,
-                                        ),
-                                        border: OutlineInputBorder(),
-                                      ),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  Text(
-                                    selectedRepeatType.unitLabel,
-                                    style: const TextStyle(
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              if (selectedRepeatType ==
-                                  TodoRepeatType.weekly) ...[
-                                const SizedBox(height: 12),
-                                const Text(
-                                  '반복 요일 선택',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                                const SizedBox(height: 6),
-                                Wrap(
-                                  spacing: 4,
-                                  runSpacing: 4,
-                                  children: List.generate(7, (index) {
-                                    final weekdayNum = index + 1;
-                                    final isSelected = selectedWeekdays
-                                        .contains(weekdayNum);
-                                    return FilterChip(
-                                      visualDensity: VisualDensity.compact,
-                                      label: Text(_weekdayLabels[index]),
-                                      selected: isSelected,
-                                      onSelected: (selected) {
-                                        HapticFeedback.selectionClick();
-                                        setDialogState(() {
-                                          if (selected) {
-                                            selectedWeekdays.add(weekdayNum);
-                                            selectedWeekdays.sort();
-                                          } else if (selectedWeekdays.length >
-                                              1) {
-                                            selectedWeekdays.remove(weekdayNum);
-                                          }
-                                        });
-                                      },
+                      if (selectedDueDate != null) ...[
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                onPressed: () async {
+                                  TimeOfDay initial =
+                                      const TimeOfDay(hour: 18, minute: 0);
+                                  if (selectedDueTime != null &&
+                                      selectedDueTime!.contains(':')) {
+                                    final parts = selectedDueTime!.split(':');
+                                    initial = TimeOfDay(
+                                      hour: int.tryParse(parts[0]) ?? 18,
+                                      minute: int.tryParse(parts[1]) ?? 0,
                                     );
-                                  }),
-                                ),
-                              ],
-                              if (selectedRepeatType ==
-                                      TodoRepeatType.monthly &&
-                                  refStartDate.day >= 29) ...[
-                                const SizedBox(height: 8),
-                                Text(
-                                  '※ ${refStartDate.day}일이 없는 달에는 해당 월의 마지막 날로 자동 조정됩니다.',
-                                  style: TextStyle(
-                                    fontSize: 11.5,
-                                    color:
-                                        Theme.of(context).colorScheme.primary,
-                                  ),
-                                ),
-                              ],
-                              const Divider(height: 20),
-                              const Text(
-                                '반복 종료 조건',
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.bold,
+                                  }
+                                  final picked = await showTimePicker(
+                                    context: ctx,
+                                    initialTime: initial,
+                                  );
+                                  if (picked != null) {
+                                    setDialogState(() {
+                                      selectedDueTime =
+                                          '${picked.hour.toString().padLeft(2, '0')}:${picked.minute.toString().padLeft(2, '0')}';
+                                    });
+                                  }
+                                },
+                                icon: const Icon(Icons.access_time, size: 16),
+                                label: Text(
+                                  selectedDueTime == null
+                                      ? '시간 미지정 (하루 종일)'
+                                      : '마감 시간: $selectedDueTime',
                                 ),
                               ),
-                              const SizedBox(height: 6),
-                              SegmentedButton<_TodoRepeatEndMode>(
-                                segments: const [
-                                  ButtonSegment(
-                                    value: _TodoRepeatEndMode.forever,
-                                    label: Text(
-                                      '계속 반복',
-                                      style: TextStyle(fontSize: 12),
-                                    ),
+                            ),
+                            if (selectedDueTime != null)
+                              IconButton(
+                                tooltip: '시간 지우기',
+                                icon: const Icon(Icons.close, size: 18),
+                                onPressed: () => setDialogState(
+                                    () => selectedDueTime = null),
+                              ),
+                          ],
+                        ),
+                        const SizedBox(height: 14),
+
+                        // 반복 주기 설정 (일정과 동일한 n일/주/개월/년 + 요일 + 종료 조건)
+                        const Text(
+                          '반복 주기 설정',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        Row(
+                          children: [
+                            if (repeatType != TodoRepeatType.none) ...[
+                              SizedBox(
+                                width: 64,
+                                child: TextField(
+                                  controller: intervalController,
+                                  keyboardType: TextInputType.number,
+                                  textAlign: TextAlign.center,
+                                  decoration: const InputDecoration(
+                                    border: OutlineInputBorder(),
+                                    isDense: true,
                                   ),
-                                  ButtonSegment(
-                                    value: _TodoRepeatEndMode.count,
-                                    label: Text(
-                                      '반복 횟수',
-                                      style: TextStyle(fontSize: 12),
-                                    ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                            ],
+                            Expanded(
+                              child: DropdownButtonFormField<TodoRepeatType>(
+                                initialValue: repeatType,
+                                decoration: const InputDecoration(
+                                  border: OutlineInputBorder(),
+                                  contentPadding: EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                    vertical: 8,
                                   ),
-                                  ButtonSegment(
-                                    value: _TodoRepeatEndMode.untilDate,
-                                    label: Text(
-                                      '종료 날짜',
-                                      style: TextStyle(fontSize: 12),
-                                    ),
-                                  ),
-                                ],
-                                selected: {endMode},
-                                onSelectionChanged: (sel) {
-                                  HapticFeedback.selectionClick();
-                                  setDialogState(() {
-                                    endMode = sel.first;
-                                  });
+                                ),
+                                items: TodoRepeatType.values
+                                    .map(
+                                      (rt) => DropdownMenuItem(
+                                        value: rt,
+                                        child: Text(rt.unitLabel),
+                                      ),
+                                    )
+                                    .toList(),
+                                onChanged: (val) {
+                                  if (val != null) {
+                                    setDialogState(() => repeatType = val);
+                                  }
                                 },
                               ),
-                              if (endMode == _TodoRepeatEndMode.count) ...[
-                                const SizedBox(height: 10),
-                                Row(
-                                  children: [
-                                    const Text(
-                                      '총 반복 횟수:',
-                                      style: TextStyle(fontSize: 13),
-                                    ),
-                                    const SizedBox(width: 10),
-                                    SizedBox(
-                                      width: 80,
-                                      child: TextField(
-                                        controller: countController,
-                                        keyboardType: TextInputType.number,
-                                        textAlign: TextAlign.center,
-                                        inputFormatters: [
-                                          FilteringTextInputFormatter
-                                              .digitsOnly,
-                                        ],
-                                        decoration: const InputDecoration(
-                                          isDense: true,
-                                          contentPadding: EdgeInsets.symmetric(
-                                            horizontal: 8,
-                                            vertical: 8,
-                                          ),
-                                          border: OutlineInputBorder(),
-                                        ),
-                                      ),
-                                    ),
-                                    const SizedBox(width: 6),
-                                    const Text('회 완료 후 종료'),
-                                  ],
-                                ),
-                              ] else if (endMode ==
-                                  _TodoRepeatEndMode.untilDate) ...[
-                                const SizedBox(height: 10),
-                                OutlinedButton.icon(
-                                  onPressed: () async {
-                                    HapticFeedback.selectionClick();
-                                    final picked = await showDatePicker(
-                                      context: ctx,
-                                      initialDate: selectedEndDate
-                                              .isBefore(refStartDate)
-                                          ? refStartDate
-                                          : selectedEndDate,
-                                      firstDate: refStartDate,
-                                      lastDate: DateTime(2035, 12, 31),
-                                    );
-                                    if (picked != null) {
-                                      setDialogState(() {
-                                        selectedEndDate = picked;
-                                      });
-                                    }
-                                  },
-                                  icon: const Icon(Icons.event, size: 16),
-                                  label: Text(
-                                    '종료 날짜: ${selectedEndDate.year}.${selectedEndDate.month.toString().padLeft(2, '0')}.${selectedEndDate.day.toString().padLeft(2, '0')}',
-                                  ),
-                                ),
-                              ],
-                            ],
-                          ),
+                            ),
+                          ],
                         ),
+                        if (repeatType == TodoRepeatType.weekly) ...[
+                          const SizedBox(height: 8),
+                          Wrap(
+                            spacing: 4,
+                            children: List.generate(7, (idx) {
+                              final wNum = idx + 1;
+                              final isSelected = repeatWeekdays.contains(wNum);
+                              return FilterChip(
+                                label: Text(_weekdayLabels[idx]),
+                                selected: isSelected,
+                                onSelected: (sel) {
+                                  HapticFeedback.selectionClick();
+                                  setDialogState(() {
+                                    if (sel) {
+                                      repeatWeekdays.add(wNum);
+                                      repeatWeekdays.sort();
+                                    } else if (repeatWeekdays.length > 1) {
+                                      repeatWeekdays.remove(wNum);
+                                    }
+                                  });
+                                },
+                              );
+                            }),
+                          ),
+                        ],
+                        if (repeatType != TodoRepeatType.none) ...[
+                          const SizedBox(height: 8),
+                          DropdownButtonFormField<String>(
+                            initialValue: repeatEndMode,
+                            decoration: const InputDecoration(
+                              labelText: '반복 종료 조건',
+                              border: OutlineInputBorder(),
+                              contentPadding: EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 8,
+                              ),
+                            ),
+                            items: const [
+                              DropdownMenuItem(
+                                value: 'infinite',
+                                child: Text('계속 반복'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'endDate',
+                                child: Text('종료일 지정'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'count',
+                                child: Text('반복 횟수(N회) 지정'),
+                              ),
+                            ],
+                            onChanged: (val) {
+                              if (val != null) {
+                                setDialogState(() => repeatEndMode = val);
+                              }
+                            },
+                          ),
+                          if (repeatEndMode == 'endDate') ...[
+                            const SizedBox(height: 8),
+                            OutlinedButton.icon(
+                              onPressed: () async {
+                                final picked = await showDatePicker(
+                                  context: ctx,
+                                  initialDate: repeatEndDate,
+                                  firstDate:
+                                      selectedDueDate ?? DateTime.now(),
+                                  lastDate: DateTime(2035),
+                                );
+                                if (picked != null) {
+                                  setDialogState(() => repeatEndDate = picked);
+                                }
+                              },
+                              icon: const Icon(Icons.event_busy, size: 16),
+                              label: Text(
+                                '종료일: ${repeatEndDate.year}.${repeatEndDate.month}.${repeatEndDate.day}',
+                              ),
+                            ),
+                          ] else if (repeatEndMode == 'count') ...[
+                            const SizedBox(height: 8),
+                            TextField(
+                              controller: countController,
+                              keyboardType: TextInputType.number,
+                              decoration: const InputDecoration(
+                                labelText: '총 반복 횟수 (회)',
+                                border: OutlineInputBorder(),
+                                isDense: true,
+                              ),
+                            ),
+                          ],
+                        ],
                       ],
 
                       const SizedBox(height: 16),
-                      const Divider(height: 1),
-                      const SizedBox(height: 12),
-
-                      // 세부 항목 (하위 체크리스트) 영역
                       const Text(
-                        '세부 항목 (선택 사항)',
+                        '세부 사항',
                         style: TextStyle(
-                          fontSize: 13,
+                          fontSize: 12,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
-                      const SizedBox(height: 8),
+                      const SizedBox(height: 6),
+                      ...subItems.asMap().entries.map((entry) {
+                        final idx = entry.key;
+                        final sub = entry.value;
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 4),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.subdirectory_arrow_right,
+                                  size: 16, color: Colors.grey),
+                              const SizedBox(width: 6),
+                              Expanded(child: Text(sub.name)),
+                              IconButton(
+                                icon: const Icon(Icons.close, size: 16),
+                                visualDensity: VisualDensity.compact,
+                                onPressed: () {
+                                  setDialogState(() => subItems.removeAt(idx));
+                                },
+                              ),
+                            ],
+                          ),
+                        );
+                      }),
                       Row(
                         children: [
                           Expanded(
                             child: TextField(
-                              controller: subItemInputController,
+                              controller: subItemController,
                               decoration: const InputDecoration(
-                                hintText: '세부 단계 입력 후 + 버튼',
+                                hintText: '세부 사항 입력 후 추가',
                                 isDense: true,
                                 border: OutlineInputBorder(),
                               ),
-                              onSubmitted: (_) => addSubItem(),
+                              onSubmitted: (val) {
+                                final text = val.trim();
+                                if (text.isNotEmpty) {
+                                  setDialogState(() {
+                                    subItems.add(
+                                      TodoSubItem(
+                                        id: DateTime.now()
+                                            .microsecondsSinceEpoch
+                                            .toString(),
+                                        name: text,
+                                      ),
+                                    );
+                                    subItemController.clear();
+                                  });
+                                }
+                              },
                             ),
                           ),
                           const SizedBox(width: 8),
-                          IconButton.filledTonal(
-                            onPressed: addSubItem,
-                            icon: const Icon(Icons.add),
+                          FilledButton.tonal(
+                            onPressed: () {
+                              final text = subItemController.text.trim();
+                              if (text.isNotEmpty) {
+                                setDialogState(() {
+                                  subItems.add(
+                                    TodoSubItem(
+                                      id: DateTime.now()
+                                          .microsecondsSinceEpoch
+                                          .toString(),
+                                      name: text,
+                                    ),
+                                  );
+                                  subItemController.clear();
+                                });
+                              }
+                            },
+                            child: const Text('추가'),
                           ),
                         ],
                       ),
-                      if (tempSubItems.isNotEmpty) ...[
-                        const SizedBox(height: 8),
-                        ...List.generate(tempSubItems.length, (sIdx) {
-                          final sub = tempSubItems[sIdx];
-                          return ListTile(
-                            dense: true,
-                            contentPadding: EdgeInsets.zero,
-                            leading: const Icon(
-                              Icons.subdirectory_arrow_right,
-                              size: 18,
-                            ),
-                            title: Text(sub.name),
-                            trailing: IconButton(
-                              icon: const Icon(Icons.close, size: 18),
-                              onPressed: () {
-                                HapticFeedback.lightImpact();
-                                setDialogState(() {
-                                  tempSubItems.removeAt(sIdx);
-                                });
-                              },
-                            ),
-                          );
-                        }),
-                      ],
                     ],
                   ),
                 ),
@@ -631,7 +540,7 @@ class _TodoScreenState extends State<TodoScreen> {
                   TextButton.icon(
                     onPressed: () {
                       Navigator.pop(ctx);
-                      _deleteTodoWithUndo(existing);
+                      _deleteTodo(existing);
                     },
                     icon: const Icon(
                       Icons.delete_outline,
@@ -654,66 +563,59 @@ class _TodoScreenState extends State<TodoScreen> {
 
                     final parsedInterval =
                         (int.tryParse(intervalController.text.trim()) ?? 1)
-                            .clamp(1, 999);
-                    final parsedCount = endMode == _TodoRepeatEndMode.count
+                            .clamp(1, 365);
+                    final parsedCount = repeatEndMode == 'count'
                         ? (int.tryParse(countController.text.trim()) ?? 1)
-                            .clamp(1, 9999)
+                            .clamp(1, 999)
                         : null;
-                    final parsedEndDate =
-                        endMode == _TodoRepeatEndMode.untilDate
-                            ? selectedEndDate
-                            : null;
-
-                    DateTime? finalDueDate = selectedDueDate;
-                    if (selectedRepeatType != TodoRepeatType.none &&
-                        finalDueDate == null) {
-                      final now = DateTime.now();
-                      finalDueDate = DateTime(now.year, now.month, now.day);
-                    }
-
-                    final finalWeekdays =
-                        selectedRepeatType == TodoRepeatType.weekly
-                            ? (selectedWeekdays.isEmpty
-                                ? [(finalDueDate ?? DateTime.now()).weekday]
-                                : List<int>.from(selectedWeekdays))
-                            : <int>[];
+                    final finalEndDate =
+                        repeatEndMode == 'endDate' ? repeatEndDate : null;
+                    final effectiveRepeat = selectedDueDate == null
+                        ? TodoRepeatType.none
+                        : repeatType;
 
                     HapticFeedback.mediumImpact();
                     if (existing == null) {
-                      final created = TodoItem(
-                        id: DateTime.now()
-                            .microsecondsSinceEpoch
-                            .toString(),
-                        title: title,
-                        dueDate: finalDueDate,
-                        dueTime: selectedDueTime,
-                        repeatType: selectedRepeatType,
-                        repeatInterval: parsedInterval,
-                        repeatWeekdays: finalWeekdays,
-                        repeatEndDate: parsedEndDate,
-                        repeatCount: parsedCount,
-                        anchorDay: finalDueDate?.day,
-                        subItems: tempSubItems,
+                      widget.todos.add(
+                        TodoItem(
+                          id: DateTime.now().microsecondsSinceEpoch.toString(),
+                          title: title,
+                          dueDate: selectedDueDate,
+                          dueTime: selectedDueTime,
+                          repeatType: effectiveRepeat,
+                          repeatInterval: parsedInterval,
+                          repeatWeekdays:
+                              effectiveRepeat == TodoRepeatType.weekly
+                                  ? List<int>.from(repeatWeekdays)
+                                  : <int>[],
+                          repeatEndDate: finalEndDate,
+                          repeatCount: parsedCount,
+                          anchorDay:
+                              effectiveRepeat == TodoRepeatType.lastDayOfMonth
+                                  ? 31
+                                  : selectedDueDate?.day,
+                          subItems: subItems,
+                          lastEditedTime: DateTime.now(),
+                        ),
                       );
-                      widget.todos.add(created);
-                      if (tempSubItems.isNotEmpty) {
-                        _expandedSubItemTodoIds.add(created.id);
-                      }
                     } else {
-                      final dueDateChanged =
-                          existing.dueDate?.day != finalDueDate?.day;
                       existing.title = title;
-                      existing.dueDate = finalDueDate;
+                      existing.dueDate = selectedDueDate;
                       existing.dueTime = selectedDueTime;
-                      existing.repeatType = selectedRepeatType;
+                      existing.repeatType = effectiveRepeat;
                       existing.repeatInterval = parsedInterval;
-                      existing.repeatWeekdays = finalWeekdays;
-                      existing.repeatEndDate = parsedEndDate;
+                      existing.repeatWeekdays =
+                          effectiveRepeat == TodoRepeatType.weekly
+                              ? List<int>.from(repeatWeekdays)
+                              : <int>[];
+                      existing.repeatEndDate = finalEndDate;
                       existing.repeatCount = parsedCount;
-                      if (dueDateChanged || existing.anchorDay == null) {
-                        existing.anchorDay = finalDueDate?.day;
-                      }
-                      existing.subItems = tempSubItems;
+                      existing.anchorDay =
+                          effectiveRepeat == TodoRepeatType.lastDayOfMonth
+                              ? 31
+                              : selectedDueDate?.day;
+                      existing.subItems = subItems;
+                      existing.markUpdated();
                     }
 
                     _notifyParent();
@@ -729,264 +631,206 @@ class _TodoScreenState extends State<TodoScreen> {
     );
   }
 
+  String _formatDateHeader(DateTime? d) {
+    if (d == null) return '기한 없음';
+    const weekdays = ['', '월', '화', '수', '목', '금', '토', '일'];
+    return '${d.year}년 ${d.month}월 ${d.day}일 (${weekdays[d.weekday]})';
+  }
+
   Widget _buildTodoCard(TodoItem todo, DateTime now) {
     final isOverdue = todo.isOverdueAt(now);
-    final hasSubs = todo.hasSubItems;
-    final isExpanded = _expandedSubItemTodoIds.contains(todo.id);
-    final repeatText = todo.repeatSummaryText;
-
-    final accentColor = todo.isCompleted
-        ? Colors.grey
-        : (isOverdue ? Colors.redAccent : Colors.teal);
+    final scheme = Theme.of(context).colorScheme;
 
     return Dismissible(
-      key: ValueKey('todo_card_${todo.id}'),
-      direction: DismissDirection.endToStart,
-      onDismissed: (_) => _deleteTodoWithUndo(todo),
+      key: ValueKey('todo_${todo.id}'),
+      direction: DismissDirection.horizontal,
       background: Container(
-        margin: const EdgeInsets.symmetric(vertical: 4),
+        margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        alignment: Alignment.centerLeft,
+        decoration: BoxDecoration(
+          color: Colors.redAccent,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: const Icon(Icons.delete_outline, color: Colors.white),
+      ),
+      secondaryBackground: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
         padding: const EdgeInsets.symmetric(horizontal: 20),
         alignment: Alignment.centerRight,
         decoration: BoxDecoration(
           color: Colors.redAccent,
           borderRadius: BorderRadius.circular(12),
         ),
-        child: const Row(
-          mainAxisAlignment: MainAxisAlignment.end,
-          children: [
-            Text(
-              '삭제',
-              style: TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            SizedBox(width: 8),
-            Icon(Icons.delete_outline, color: Colors.white),
-          ],
-        ),
+        child: const Icon(Icons.delete_outline, color: Colors.white),
       ),
+      onDismissed: (_) => _deleteTodo(todo),
       child: Card(
-        margin: const EdgeInsets.symmetric(vertical: 4),
+        margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(12),
           side: BorderSide(
-            color: accentColor.withValues(alpha: 0.35),
+            color: isOverdue
+                ? Colors.redAccent.withValues(alpha: 0.7)
+                : scheme.outlineVariant.withValues(alpha: 0.5),
           ),
         ),
-        child: Column(
-          children: [
-            ListTile(
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: 8,
-                vertical: 2,
-              ),
-              leading: Checkbox(
-                value: todo.isCompleted,
-                activeColor: Colors.teal,
-                onChanged: (val) {
-                  final next = val ?? false;
-                  if (next) {
-                    HapticFeedback.heavyImpact();
-                  } else {
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              ListTile(
+                leading: Checkbox(
+                  value: todo.isCompleted,
+                  onChanged: (val) {
                     HapticFeedback.lightImpact();
-                  }
-                  todo.toggleCompleted(next, DateTime.now());
-                  _notifyParent();
-                },
-              ),
-              title: Text(
-                todo.title,
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  decoration:
-                      todo.isCompleted ? TextDecoration.lineThrough : null,
-                  color: todo.isCompleted
-                      ? Colors.grey
-                      : (isOverdue ? Colors.redAccent : null),
+                    setState(() {
+                      todo.toggleCompleted(val ?? false, DateTime.now());
+                    });
+                    _notifyParent();
+                  },
                 ),
-              ),
-              subtitle: (todo.dueTime != null ||
-                      repeatText.isNotEmpty ||
-                      hasSubs)
-                  ? Padding(
-                      padding: const EdgeInsets.only(top: 4),
-                      child: Wrap(
-                        spacing: 8,
-                        runSpacing: 4,
-                        crossAxisAlignment: WrapCrossAlignment.center,
-                        children: [
-                          if (todo.dueTime != null &&
-                              todo.dueTime!.isNotEmpty)
-                            Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(
-                                  Icons.schedule,
-                                  size: 13,
-                                  color: isOverdue && !todo.isCompleted
-                                      ? Colors.redAccent
-                                      : Colors.grey.shade600,
-                                ),
-                                const SizedBox(width: 3),
-                                Text(
-                                  todo.dueTime!,
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    color: isOverdue && !todo.isCompleted
-                                        ? Colors.redAccent
-                                        : null,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          if (repeatText.isNotEmpty)
-                            Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const Icon(Icons.repeat, size: 13),
-                                const SizedBox(width: 3),
-                                Text(
-                                  repeatText,
-                                  style: const TextStyle(fontSize: 12),
-                                ),
-                              ],
-                            ),
-                          if (hasSubs)
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 6,
-                                vertical: 1,
-                              ),
-                              decoration: BoxDecoration(
-                                color: accentColor.withValues(alpha: 0.12),
-                                borderRadius: BorderRadius.circular(6),
-                              ),
-                              child: Text(
-                                '세부 ${todo.checkedSubItemsCount}/${todo.subItems.length}',
-                                style: TextStyle(
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w600,
-                                  color: accentColor,
-                                ),
-                              ),
-                            ),
-                        ],
-                      ),
-                    )
-                  : null,
-              onTap: () {
-                if (hasSubs) {
-                  HapticFeedback.selectionClick();
-                  setState(() {
-                    if (isExpanded) {
-                      _expandedSubItemTodoIds.remove(todo.id);
-                    } else {
-                      _expandedSubItemTodoIds.add(todo.id);
-                    }
-                  });
-                } else {
-                  _showTodoDialog(existing: todo);
-                }
-              },
-              trailing: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (hasSubs)
-                    IconButton(
-                      visualDensity: VisualDensity.compact,
-                      tooltip: isExpanded ? '세부 항목 접기' : '세부 항목 펼치기',
-                      icon: Icon(
-                        isExpanded ? Icons.expand_less : Icons.expand_more,
-                      ),
-                      onPressed: () {
-                        HapticFeedback.selectionClick();
-                        setState(() {
-                          if (isExpanded) {
-                            _expandedSubItemTodoIds.remove(todo.id);
-                          } else {
-                            _expandedSubItemTodoIds.add(todo.id);
-                          }
-                        });
-                      },
-                    ),
-                  IconButton(
-                    visualDensity: VisualDensity.compact,
-                    tooltip: '할 일 수정',
-                    icon: const Icon(Icons.edit_outlined, size: 19),
-                    onPressed: () => _showTodoDialog(existing: todo),
-                  ),
-                ],
-              ),
-            ),
-            if (hasSubs && isExpanded) ...[
-              const Divider(height: 1),
-              Padding(
-                padding: const EdgeInsets.only(left: 24, right: 8, bottom: 6),
-                child: Column(
-                  children: todo.subItems.map((sub) {
-                    return CheckboxListTile(
-                      dense: true,
-                      visualDensity: VisualDensity.compact,
-                      controlAffinity: ListTileControlAffinity.leading,
-                      value: sub.isChecked,
-                      activeColor: Colors.teal,
-                      title: Text(
-                        sub.name,
+                title: Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        todo.title,
                         style: TextStyle(
-                          fontSize: 13,
-                          decoration: sub.isChecked
+                          fontWeight: FontWeight.bold,
+                          decoration: todo.isCompleted
                               ? TextDecoration.lineThrough
                               : null,
-                          color: sub.isChecked ? Colors.grey : null,
+                          color: todo.isCompleted
+                              ? Colors.grey
+                              : (isOverdue ? Colors.redAccent : null),
                         ),
                       ),
-                      onChanged: (val) {
-                        HapticFeedback.lightImpact();
-                        sub.isChecked = val ?? false;
-                        if (todo.isAllSubItemsChecked && !todo.isCompleted) {
-                          HapticFeedback.heavyImpact();
-                          todo.toggleCompleted(true, DateTime.now());
-                        } else if (!todo.isAllSubItemsChecked &&
-                            todo.isCompleted) {
-                          todo.toggleCompleted(false, DateTime.now());
-                        }
-                        _notifyParent();
-                      },
-                    );
-                  }).toList(),
+                    ),
+                    if (todo.googleTaskId != null) ...[
+                      const SizedBox(width: 6),
+                      Icon(
+                        Icons.cloud_done_outlined,
+                        size: 15,
+                        color: scheme.primary,
+                      ),
+                    ],
+                  ],
                 ),
+                subtitle: (todo.dueTime != null || todo.isRepeating)
+                    ? Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Wrap(
+                          spacing: 8,
+                          runSpacing: 4,
+                          children: [
+                            if (todo.dueTime != null)
+                              Text(
+                                '⏰ ${todo.dueTime}',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: isOverdue
+                                      ? FontWeight.bold
+                                      : FontWeight.normal,
+                                  color: isOverdue ? Colors.redAccent : null,
+                                ),
+                              ),
+                            if (todo.isRepeating)
+                              Text(
+                                '🔁 ${todo.repeatSummaryText}',
+                                style: const TextStyle(fontSize: 12),
+                              ),
+                          ],
+                        ),
+                      )
+                    : null,
+                trailing: IconButton(
+                  icon: const Icon(Icons.edit_outlined, size: 18),
+                  onPressed: () => _showTodoDialog(existing: todo),
+                ),
+                onTap: () => _showTodoDialog(existing: todo),
               ),
+
+              // 세부 사항(Sub-tasks) 개별 체크 리스트 (모두 체크해도 상위 할 일은 별도 체크)
+              if (todo.hasSubItems)
+                Padding(
+                  padding:
+                      const EdgeInsets.only(left: 56, right: 16, bottom: 8),
+                  child: Column(
+                    children: todo.subItems.map((sub) {
+                      return InkWell(
+                        borderRadius: BorderRadius.circular(6),
+                        onTap: () {
+                          HapticFeedback.selectionClick();
+                          setState(() {
+                            sub.isChecked = !sub.isChecked;
+                            todo.markUpdated();
+                          });
+                          _notifyParent();
+                        },
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 3),
+                          child: Row(
+                            children: [
+                              Icon(
+                                sub.isChecked
+                                    ? Icons.check_box
+                                    : Icons.check_box_outline_blank,
+                                size: 18,
+                                color: sub.isChecked
+                                    ? scheme.primary
+                                    : Colors.grey,
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  sub.name,
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    decoration: sub.isChecked
+                                        ? TextDecoration.lineThrough
+                                        : null,
+                                    color: sub.isChecked ? Colors.grey : null,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ),
             ],
-          ],
+          ),
         ),
       ),
     );
   }
 
-  List<Widget> _buildGroupedInProgressList(
-    List<TodoItem> inProgress,
-    DateTime now,
-  ) {
+  List<Widget> _buildDateGroupedItems(List<TodoItem> list, DateTime now) {
+    final sorted = _sortTodos(list);
     final widgets = <Widget>[];
     String? lastHeader;
 
-    for (final todo in inProgress) {
+    for (final todo in sorted) {
       final header = _formatDateHeader(todo.dueDate);
       if (header != lastHeader) {
         lastHeader = header;
-        final isOverdueHeader = header.startsWith('기한 지남');
+        final isHeaderOverdue = !todo.isCompleted &&
+            todo.dueDate != null &&
+            DateTime(todo.dueDate!.year, todo.dueDate!.month,
+                    todo.dueDate!.day, 23, 59, 59)
+                .isBefore(now);
         widgets.add(
           Padding(
-            padding: const EdgeInsets.fromLTRB(4, 10, 4, 4),
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
             child: Text(
               header,
               style: TextStyle(
-                fontSize: 12.5,
+                fontSize: 13,
                 fontWeight: FontWeight.bold,
-                color: isOverdueHeader
-                    ? Colors.redAccent
-                    : Theme.of(context).colorScheme.primary,
+                color: isHeaderOverdue ? Colors.redAccent : Colors.grey.shade700,
               ),
             ),
           ),
@@ -1000,171 +844,177 @@ class _TodoScreenState extends State<TodoScreen> {
   @override
   Widget build(BuildContext context) {
     final now = DateTime.now();
-    final inProgress = _inProgressTodos;
-    final completed = _completedTodos;
+    final scheme = Theme.of(context).colorScheme;
+    final ongoingTodos =
+        _activeTodos.where((t) => !t.isCompleted).toList();
+    final completedTodos =
+        _activeTodos.where((t) => t.isCompleted).toList();
 
-    return Scaffold(
-      body: Column(
-        children: [
-          if (widget.showTips)
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              color: Theme.of(context)
-                  .colorScheme
-                  .surfaceContainerHighest
-                  .withValues(alpha: 0.5),
-              child: const Row(
-                children: [
-                  Icon(Icons.task_alt, size: 16),
-                  SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      '팁: 완료된 반복 할 일은 다음 주기 하루 시작 시간에 맞춰 자동으로 다시 진행 중으로 돌아옵니다.',
-                      style: TextStyle(fontSize: 12),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          Expanded(
-            child: widget.todos.isEmpty
-                ? Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Icon(
-                          Icons.task_alt_outlined,
-                          size: 64,
-                          color: Colors.grey,
-                        ),
-                        const SizedBox(height: 12),
-                        const Text('등록된 할 일이 없습니다.'),
-                        const SizedBox(height: 12),
-                        FilledButton.icon(
-                          onPressed: () => _showTodoDialog(),
-                          icon: const Icon(Icons.add),
-                          label: const Text('첫 할 일 추가하기'),
-                        ),
-                      ],
-                    ),
-                  )
-                : ListView(
-                    padding: const EdgeInsets.fromLTRB(12, 8, 12, 88),
+    return ValueListenableBuilder<bool>(
+      valueListenable: SettingsScreen.googleTasksSyncNotifier,
+      builder: (context, notifierTaskSynced, _) {
+        final showSyncButton =
+            widget.isGoogleTasksSynced ?? notifierTaskSynced;
+        final isSyncing = widget.isSyncingTasks || _localSyncing;
+
+        return Scaffold(
+          body: Column(
+            children: [
+              if (widget.showTips)
+                Container(
+                  width: double.infinity,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  color: scheme.surfaceContainerHighest.withValues(alpha: 0.5),
+                  child: const Row(
                     children: [
-                      // 1. 진행 중 섹션
-                      InkWell(
-                        borderRadius: BorderRadius.circular(8),
-                        onTap: () {
-                          HapticFeedback.selectionClick();
-                          setState(() {
-                            _isInProgressExpanded = !_isInProgressExpanded;
-                          });
-                        },
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 4,
-                            vertical: 8,
-                          ),
-                          child: Row(
-                            children: [
-                              Icon(
-                                _isInProgressExpanded
-                                    ? Icons.expand_more
-                                    : Icons.chevron_right,
-                                size: 20,
-                              ),
-                              const SizedBox(width: 4),
-                              Text(
-                                '진행 중 (${inProgress.length})',
-                                style: const TextStyle(
-                                  fontSize: 15,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                            ],
-                          ),
+                      Icon(Icons.swipe_outlined, size: 16),
+                      SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          '팁: 할 일을 좌우로 밀면 삭제되며, 반복 할 일은 완료 후 다음 주기 하루 시작 시간에 자동으로 진행 중으로 복귀합니다.',
+                          style: TextStyle(fontSize: 12),
                         ),
                       ),
-                      if (_isInProgressExpanded) ...[
-                        if (inProgress.isEmpty)
-                          const Padding(
-                            padding: EdgeInsets.symmetric(vertical: 16),
-                            child: Center(
-                              child: Text(
-                                '진행 중인 할 일이 없습니다 🎉',
-                                style: TextStyle(color: Colors.grey),
-                              ),
-                            ),
-                          )
-                        else
-                          ..._buildGroupedInProgressList(inProgress, now),
-                      ],
-
-                      const SizedBox(height: 12),
-                      const Divider(height: 1),
-                      const SizedBox(height: 8),
-
-                      // 2. 완료됨 섹션
-                      InkWell(
-                        borderRadius: BorderRadius.circular(8),
-                        onTap: () {
-                          HapticFeedback.selectionClick();
-                          setState(() {
-                            _isCompletedExpanded = !_isCompletedExpanded;
-                          });
-                        },
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 4,
-                            vertical: 8,
-                          ),
-                          child: Row(
-                            children: [
-                              Icon(
-                                _isCompletedExpanded
-                                    ? Icons.expand_more
-                                    : Icons.chevron_right,
-                                size: 20,
-                                color: Colors.grey,
-                              ),
-                              const SizedBox(width: 4),
-                              Text(
-                                '완료됨 (${completed.length})',
-                                style: const TextStyle(
-                                  fontSize: 15,
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.grey,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                      if (_isCompletedExpanded) ...[
-                        if (completed.isEmpty)
-                          const Padding(
-                            padding: EdgeInsets.symmetric(vertical: 12),
-                            child: Center(
-                              child: Text(
-                                '완료된 할 일이 없습니다.',
-                                style: TextStyle(color: Colors.grey),
-                              ),
-                            ),
-                          )
-                        else
-                          ...completed.map((t) => _buildTodoCard(t, now)),
-                      ],
                     ],
                   ),
+                ),
+              Expanded(
+                child: ListView(
+                  padding: const EdgeInsets.only(bottom: 88),
+                  children: [
+                    // --- [진행 중] 섹션 헤더 수정 ---
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 8, 12, 4),
+                      child: Row(
+                        children: [
+                          // 헤더 전체 영역 터치 가능하게 묶기
+                          Expanded(
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(8),
+                              onTap: () {
+                                HapticFeedback.selectionClick();
+                                setState(() => _isOngoingExpanded = !_isOngoingExpanded);
+                              },
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+                                child: Row(
+                                  children: [
+                                    Text(
+                                      '진행 중 (${ongoingTodos.length})',
+                                      style: const TextStyle(
+                                        fontSize: 17,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                    const Spacer(),
+                                    Icon(
+                                      _isOngoingExpanded
+                                          ? Icons.expand_less
+                                          : Icons.expand_more,
+                                      color: Colors.grey.shade700,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                          // 구글 태스크 동기화 버튼 (동기화 켜져 있을 때만 우측에 표시)
+                          if (showSyncButton) ...[
+                            const SizedBox(width: 4),
+                            IconButton(
+                              tooltip: 'Google 태스크 동기화',
+                              onPressed: isSyncing ? null : _triggerTasksSync,
+                              icon: isSyncing
+                                  ? const SizedBox(
+                                      width: 18,
+                                      height: 18,
+                                      child: CircularProgressIndicator(strokeWidth: 2),
+                                    )
+                                  : Icon(
+                                      Icons.sync,
+                                      color: scheme.primary,
+                                      size: 20,
+                                    ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+
+                    if (_isOngoingExpanded)
+                      if (ongoingTodos.isEmpty)
+                        const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 28),
+                          child: Center(
+                            child: Text(
+                              '진행 중인 할 일이 없습니다.',
+                              style: TextStyle(color: Colors.grey),
+                            ),
+                          ),
+                        )
+                      else
+                        ..._buildDateGroupedItems(ongoingTodos, now),
+
+                    const Divider(height: 24),
+
+                    // --- [완료됨] 섹션 헤더 수정 ---
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(8),
+                          onTap: () {
+                            HapticFeedback.selectionClick();
+                            setState(() => _isCompletedExpanded = !_isCompletedExpanded);
+                          },
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+                            child: Row(
+                              children: [
+                                Text(
+                                  '완료됨 (${completedTodos.length})',
+                                  style: const TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                                const Spacer(),
+                                Icon(
+                                  _isCompletedExpanded
+                                      ? Icons.expand_less
+                                      : Icons.expand_more,
+                                  color: Colors.grey.shade700,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    if (_isCompletedExpanded)
+                      if (completedTodos.isEmpty)
+                        const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 16),
+                          child: Center(
+                            child: Text(
+                              '완료된 할 일이 없습니다.',
+                              style: TextStyle(color: Colors.grey),
+                            ),
+                          ),
+                        )
+                      else
+                        ..._buildDateGroupedItems(completedTodos, now),
+                  ],
+                ),
+              ),
+            ],
           ),
-        ],
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => _showTodoDialog(),
-        icon: const Icon(Icons.add),
-        label: const Text('할 일 추가'),
-      ),
+          floatingActionButton: FloatingActionButton.extended(
+            onPressed: () => _showTodoDialog(),
+            icon: const Icon(Icons.add_task),
+            label: const Text('할 일 추가'),
+          ),
+        );
+      },
     );
   }
 }

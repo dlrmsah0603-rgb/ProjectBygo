@@ -1,10 +1,12 @@
 import 'dart:convert';
 import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:googleapis/calendar/v3.dart' as cal;
 import 'package:googleapis/tasks/v1.dart' as tasks;
 import 'package:extension_google_sign_in_as_googleapis_auth/extension_google_sign_in_as_googleapis_auth.dart';
+
 import '../models/schedule_model.dart';
 import '../models/situation_model.dart';
 import '../models/todo_model.dart';
@@ -32,24 +34,21 @@ class GoogleSyncService {
   static final GoogleSyncService instance = GoogleSyncService._();
 
   final GoogleSignIn _googleSignIn = GoogleSignIn(
-    scopes: <String>[
-      cal.CalendarApi.calendarScope,
-      tasks.TasksApi.tasksScope,
-    ],
+    scopes: <String>[cal.CalendarApi.calendarScope, tasks.TasksApi.tasksScope],
   );
 
   GoogleSignInAccount? _currentUser;
   bool _isMockConnected = false;
 
   String? get connectedEmail =>
-      _currentUser?.email ?? (_isMockConnected ? 'bygo.local.sync@gmail.com' : null);
+      _currentUser?.email ?? (_isMockConnected ? 'bygo.local.sync@gmail.com' : _currentUser?.email);
 
   bool get isSignedIn => _currentUser != null || _isMockConnected;
 
-  Future<String?> signIn({bool allowMockFallback = true}) async {
+  Future<String?> signIn({bool allowMockFallback = false}) async {
     try {
-      final account = await _googleSignIn.signInSilently() ??
-          await _googleSignIn.signIn();
+      final account =
+          await _googleSignIn.signInSilently() ?? await _googleSignIn.signIn();
       if (account != null) {
         _currentUser = account;
         _isMockConnected = false;
@@ -81,9 +80,9 @@ class GoogleSyncService {
     required List<Schedule> localSchedules,
     required List<Situation> situations,
   }) async {
-    final workingList = localSchedules.map((s) => s.copyWith(
-          lastEditedTime: s.lastEditedTime,
-        )).toList();
+    final workingList = localSchedules
+        .map((s) => s.copyWith(lastEditedTime: s.lastEditedTime))
+        .toList();
 
     try {
       if (_currentUser == null && !_isMockConnected) {
@@ -141,7 +140,10 @@ class GoogleSyncService {
         // 2) 아직 구글에 올라가지 않은 신규 로컬 일정 -> Insert
         if (local.googleEventId == null || local.googleEventId!.isEmpty) {
           final eventToInsert = _scheduleToGoogleEvent(local, situations);
-          final created = await calendarApi.events.insert(eventToInsert, 'primary');
+          final created = await calendarApi.events.insert(
+            eventToInsert,
+            'primary',
+          );
           final updatedLocal = local.copyWith(
             googleEventId: created.id,
             lastEditedTime: created.updated?.toLocal() ?? DateTime.now(),
@@ -167,17 +169,25 @@ class GoogleSyncService {
             remote.updated?.toLocal() ?? DateTime.fromMillisecondsSinceEpoch(0);
 
         // 충돌 해결: Latest Wins
-        if (local.lastEditedTime
-            .isAfter(remoteUpdated.add(const Duration(seconds: 2)))) {
+        if (local.lastEditedTime.isAfter(
+          remoteUpdated.add(const Duration(seconds: 2)),
+        )) {
           final eventToPatch = _scheduleToGoogleEvent(local, situations);
-          final patched =
-              await calendarApi.events.patch(eventToPatch, 'primary', gid);
-          survivors.add(local.copyWith(
-            lastEditedTime: patched.updated?.toLocal() ?? local.lastEditedTime,
-          ));
+          final patched = await calendarApi.events.patch(
+            eventToPatch,
+            'primary',
+            gid,
+          );
+          survivors.add(
+            local.copyWith(
+              lastEditedTime:
+                  patched.updated?.toLocal() ?? local.lastEditedTime,
+            ),
+          );
           uploaded++;
-        } else if (remoteUpdated
-            .isAfter(local.lastEditedTime.add(const Duration(seconds: 2)))) {
+        } else if (remoteUpdated.isAfter(
+          local.lastEditedTime.add(const Duration(seconds: 2)),
+        )) {
           final merged = _googleEventToSchedule(remote, existingLocal: local);
           survivors.add(merged);
           downloaded++;
@@ -330,20 +340,28 @@ class GoogleSyncService {
         }
 
         final remoteUpdated =
-            _parseRfc3339(remote.updated) ?? DateTime.fromMillisecondsSinceEpoch(0);
+            _parseRfc3339(remote.updated) ??
+            DateTime.fromMillisecondsSinceEpoch(0);
 
-        if (local.lastEditedTime
-            .isAfter(remoteUpdated.add(const Duration(seconds: 2)))) {
+        if (local.lastEditedTime.isAfter(
+          remoteUpdated.add(const Duration(seconds: 2)),
+        )) {
           final taskToPatch = _todoToGoogleTask(local);
-          final patched =
-              await tasksApi.tasks.patch(taskToPatch, '@default', tid);
-          survivors.add(local.copyWith(
-            lastEditedTime:
-                _parseRfc3339(patched.updated) ?? local.lastEditedTime,
-          ));
+          final patched = await tasksApi.tasks.patch(
+            taskToPatch,
+            '@default',
+            tid,
+          );
+          survivors.add(
+            local.copyWith(
+              lastEditedTime:
+                  _parseRfc3339(patched.updated) ?? local.lastEditedTime,
+            ),
+          );
           uploaded++;
-        } else if (remoteUpdated
-            .isAfter(local.lastEditedTime.add(const Duration(seconds: 2)))) {
+        } else if (remoteUpdated.isAfter(
+          local.lastEditedTime.add(const Duration(seconds: 2)),
+        )) {
           final merged = _googleTaskToTodo(remote, existingLocal: local);
           survivors.add(merged);
           downloaded++;
@@ -416,7 +434,9 @@ class GoogleSyncService {
   // 3. 변환 유틸리티: Schedule <-> Google Calendar Event (RRULE & Color & ExtendedProps)
   // ===========================================================================
   cal.Event _scheduleToGoogleEvent(
-      Schedule schedule, List<Situation> situations) {
+    Schedule schedule,
+    List<Situation> situations,
+  ) {
     final startDt = schedule.scheduledDateTimeOn(schedule.date);
     final endDt = startDt.add(const Duration(hours: 1));
 
@@ -451,29 +471,26 @@ class GoogleSyncService {
         dateTime: startDt.toUtc(),
         timeZone: 'Asia/Seoul',
       ),
-      end: cal.EventDateTime(
-        dateTime: endDt.toUtc(),
-        timeZone: 'Asia/Seoul',
-      ),
+      end: cal.EventDateTime(dateTime: endDt.toUtc(), timeZone: 'Asia/Seoul'),
       recurrence: rrule != null ? <String>[rrule] : null,
-      extendedProperties: cal.EventExtendedProperties(
-        private: privateProps,
-      ),
+      extendedProperties: cal.EventExtendedProperties(private: privateProps),
     );
   }
 
   Schedule _googleEventToSchedule(cal.Event event, {Schedule? existingLocal}) {
-    final startLocal = (event.start?.dateTime ??
-            event.start?.date ??
-            existingLocal?.date ??
-            DateTime.now())
-        .toLocal();
+    final startLocal =
+        (event.start?.dateTime ??
+                event.start?.date ??
+                existingLocal?.date ??
+                DateTime.now())
+            .toLocal();
 
     final timeStr = event.start?.dateTime != null
         ? '${startLocal.hour.toString().padLeft(2, '0')}:${startLocal.minute.toString().padLeft(2, '0')}'
         : (existingLocal?.time ?? '09:00');
 
-    final privateProps = event.extendedProperties?.private ?? <String, String>{};
+    final privateProps =
+        event.extendedProperties?.private ?? <String, String>{};
 
     // 외부에서 생성된 일정이면 situationName 및 tags는 미지정(null / 빈 리스트) 유지
     String? situationName =
@@ -494,7 +511,8 @@ class GoogleSyncService {
     }
 
     final baseSchedule = Schedule(
-      id: existingLocal?.id ??
+      id:
+          existingLocal?.id ??
           privateProps['bygoId'] ??
           'gcal_${event.id ?? DateTime.now().microsecondsSinceEpoch}',
       date: DateTime(startLocal.year, startLocal.month, startLocal.day),
@@ -584,13 +602,17 @@ class GoogleSyncService {
   }
 
   Schedule _applyRRuleToSchedule(Schedule base, String rruleLine) {
-    final raw = rruleLine.replaceFirst(RegExp('^RRULE:', caseSensitive: false), '');
+    final raw = rruleLine.replaceFirst(
+      RegExp('^RRULE:', caseSensitive: false),
+      '',
+    );
     final map = <String, String>{};
     for (final kv in raw.split(';')) {
       final idx = kv.indexOf('=');
       if (idx > 0) {
-        map[kv.substring(0, idx).toUpperCase()] =
-            kv.substring(idx + 1).toUpperCase();
+        map[kv.substring(0, idx).toUpperCase()] = kv
+            .substring(idx + 1)
+            .toUpperCase();
       }
     }
 
@@ -686,8 +708,9 @@ class GoogleSyncService {
       final r2 = (hex >> 16) & 0xFF;
       final g2 = (hex >> 8) & 0xFF;
       final b2 = hex & 0xFF;
-      final dist = math
-          .sqrt(math.pow(r1 - r2, 2) + math.pow(g1 - g2, 2) + math.pow(b1 - b2, 2));
+      final dist = math.sqrt(
+        math.pow(r1 - r2, 2) + math.pow(g1 - g2, 2) + math.pow(b1 - b2, 2),
+      );
       if (dist < minDistance) {
         minDistance = dist;
         bestId = id;
@@ -717,8 +740,7 @@ class GoogleSyncService {
       notes: todo.toGoogleTaskNotes(),
       due: dueRfc3339,
       status: todo.isCompleted ? 'completed' : 'needsAction',
-      completed:
-          todo.completedAt?.toUtc().toIso8601String(),
+      completed: todo.completedAt?.toUtc().toIso8601String(),
     );
   }
 
@@ -734,25 +756,26 @@ class GoogleSyncService {
     final isRemoteCompleted = remote.status == 'completed';
     final completedAt = isRemoteCompleted
         ? (_parseRfc3339(remote.completed) ??
-            existingLocal?.completedAt ??
-            DateTime.now())
+              existingLocal?.completedAt ??
+              DateTime.now())
         : null;
 
-    final item = (existingLocal ??
-            TodoItem(
-              id: 'gtask_${remote.id ?? DateTime.now().microsecondsSinceEpoch}',
-              title: remote.title ?? '(제목 없음)',
-            ))
-        .copyWith(
-      title: remote.title ?? existingLocal?.title ?? '(제목 없음)',
-      dueDate: parsedDue,
-      clearDueDate: parsedDue == null,
-      isCompleted: isRemoteCompleted,
-      completedAt: completedAt,
-      clearCompletedAt: !isRemoteCompleted,
-      googleTaskId: remote.id,
-      lastEditedTime: _parseRfc3339(remote.updated) ?? DateTime.now(),
-    );
+    final item =
+        (existingLocal ??
+                TodoItem(
+                  id: 'gtask_${remote.id ?? DateTime.now().microsecondsSinceEpoch}',
+                  title: remote.title ?? '(제목 없음)',
+                ))
+            .copyWith(
+              title: remote.title ?? existingLocal?.title ?? '(제목 없음)',
+              dueDate: parsedDue,
+              clearDueDate: parsedDue == null,
+              isCompleted: isRemoteCompleted,
+              completedAt: completedAt,
+              clearCompletedAt: !isRemoteCompleted,
+              googleTaskId: remote.id,
+              lastEditedTime: _parseRfc3339(remote.updated) ?? DateTime.now(),
+            );
 
     item.applyFromGoogleTaskNotes(remote.notes);
     return item;
