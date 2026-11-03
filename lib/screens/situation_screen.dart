@@ -72,8 +72,18 @@ class _SituationScreenState extends State<SituationScreen> {
     widget.onSituationsChanged(widget.situations);
   }
 
-  /// 체크리스트 100% 달성 시 당일 캘린더에 완료 기록 자동 추가 (동일 상황 당일 중복 방지 + 실행 취소 지원)
-  void _handleChecklistCompletedRecord(Situation situation) {
+  /// 일정의 날짜와 "HH:mm" 문자열을 결합하여 DateTime으로 변환
+  DateTime? _parseRecordDateTime(DateTime date, String timeStr) {
+    final parts = timeStr.split(':');
+    if (parts.length != 2) return null;
+    final hh = int.tryParse(parts[0]);
+    final mm = int.tryParse(parts[1]);
+    if (hh == null || mm == null) return null;
+    return DateTime(date.year, date.month, date.day, hh, mm);
+  }
+
+  /// 체크리스트 100% 달성 시 당일 캘린더에 완료 기록 추가 (30분 이내 확인 바텀시트 / 30분 초과 다중 기록 자동 추가)
+  Future<void> _handleChecklistCompletedRecord(Situation situation) async {
     if (widget.onChecklistCompleted != null) {
       widget.onChecklistCompleted!(situation);
       return;
@@ -87,7 +97,9 @@ class _SituationScreenState extends State<SituationScreen> {
     final currentTimeStr = '$hh:$mm';
     final recordTitle = '${situation.name} 체크리스트 완료';
 
-    Schedule? existingRecord;
+    // 당일 동일 상황의 가장 최근 자동 기록 탐색
+    Schedule? latestRecord;
+    DateTime? latestRecordTime;
     for (final sc in widget.schedules) {
       if (!sc.isDeleted &&
           sc.isAutoRecord &&
@@ -96,30 +108,163 @@ class _SituationScreenState extends State<SituationScreen> {
           sc.date.year == today.year &&
           sc.date.month == today.month &&
           sc.date.day == today.day) {
-        existingRecord = sc;
-        break;
+        final parsed = _parseRecordDateTime(today, sc.time) ?? sc.lastEditedTime;
+        if (latestRecord == null ||
+            parsed.isAfter(latestRecordTime!) ||
+            (parsed.isAtSameMomentAs(latestRecordTime) &&
+                sc.lastEditedTime.isAfter(latestRecord.lastEditedTime))) {
+          latestRecord = sc;
+          latestRecordTime = parsed;
+        }
       }
     }
 
-    Schedule? newlyAdded;
-    setState(() {
-      if (existingRecord != null) {
-        existingRecord.time = currentTimeStr;
-        existingRecord.title = recordTitle;
-        existingRecord.markUpdated();
-      } else {
-        newlyAdded = Schedule(
-          id: 'record_${now.microsecondsSinceEpoch}',
-          date: today,
-          title: recordTitle,
-          time: currentTimeStr,
-          tags: <String>[situation.name],
-          situationName: situation.name,
-          isAutoRecord: true,
-          lastEditedTime: now,
+    if (latestRecord == null || latestRecordTime == null) {
+      _addNewCompletedRecord(
+        situation: situation,
+        now: now,
+        today: today,
+        currentTimeStr: currentTimeStr,
+        recordTitle: recordTitle,
+        isAdditional: false,
+      );
+      return;
+    }
+
+    final diffMinutes = now.difference(latestRecordTime).inMinutes;
+    if (diffMinutes >= 0 && diffMinutes <= 30) {
+      final choice = await _showDuplicateRecordBottomSheet(
+        situationName: situation.name,
+        previousTimeStr: latestRecord.time,
+        currentTimeStr: currentTimeStr,
+      );
+      if (!mounted) return;
+
+      if (choice == 'update') {
+        _updateExistingCompletedRecord(
+          situation: situation,
+          existingRecord: latestRecord,
+          currentTimeStr: currentTimeStr,
+          recordTitle: recordTitle,
         );
-        widget.schedules.add(newlyAdded!);
+      } else if (choice == 'add') {
+        _addNewCompletedRecord(
+          situation: situation,
+          now: now,
+          today: today,
+          currentTimeStr: currentTimeStr,
+          recordTitle: recordTitle,
+          isAdditional: true,
+        );
+      } else {
+        ScaffoldMessenger.of(context).clearSnackBars();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('체크리스트가 완료되었습니다. (캘린더 기록 유지)'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
       }
+    } else {
+      // 30분 초과 시 별도 팝업 없이 새로운 외출 기록으로 자동 추가
+      _addNewCompletedRecord(
+        situation: situation,
+        now: now,
+        today: today,
+        currentTimeStr: currentTimeStr,
+        recordTitle: recordTitle,
+        isAdditional: true,
+      );
+    }
+  }
+
+  Future<String?> _showDuplicateRecordBottomSheet({
+    required String situationName,
+    required String previousTimeStr,
+    required String currentTimeStr,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
+    return showModalBottomSheet<String>(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 36,
+                    height: 4,
+                    margin: const EdgeInsets.only(bottom: 16),
+                    decoration: BoxDecoration(
+                      color: scheme.outlineVariant,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                Text(
+                  '방금 전($previousTimeStr) 완료된 \'$situationName\' 기록이 있습니다.\n현재 시각($currentTimeStr)으로 어떻게 처리할까요?',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                    color: scheme.onSurface,
+                    height: 1.45,
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () {
+                          HapticFeedback.lightImpact();
+                          Navigator.of(ctx).pop('update');
+                        },
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 13),
+                        ),
+                        child: const Text('기존 시간 갱신'),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: FilledButton(
+                        onPressed: () {
+                          HapticFeedback.lightImpact();
+                          Navigator.of(ctx).pop('add');
+                        },
+                        style: FilledButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 13),
+                        ),
+                        child: const Text('새 기록 추가'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _updateExistingCompletedRecord({
+    required Situation situation,
+    required Schedule existingRecord,
+    required String currentTimeStr,
+    required String recordTitle,
+  }) {
+    setState(() {
+      existingRecord.time = currentTimeStr;
+      existingRecord.title = recordTitle;
+      existingRecord.markUpdated();
     });
     widget.onSchedulesChanged!(widget.schedules);
 
@@ -127,21 +272,54 @@ class _SituationScreenState extends State<SituationScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          existingRecord != null
-              ? "🎉 '${situation.name}' 완료 기록 시각이 $currentTimeStr로 갱신되었습니다."
+          "🎉 '${situation.name}' 완료 기록 시각이 $currentTimeStr로 갱신되었습니다.",
+        ),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  void _addNewCompletedRecord({
+    required Situation situation,
+    required DateTime now,
+    required DateTime today,
+    required String currentTimeStr,
+    required String recordTitle,
+    required bool isAdditional,
+  }) {
+    final newlyAdded = Schedule(
+      id: 'record_${now.microsecondsSinceEpoch}',
+      date: today,
+      title: recordTitle,
+      time: currentTimeStr,
+      tags: <String>[situation.name],
+      situationName: situation.name,
+      isAutoRecord: true,
+      lastEditedTime: now,
+    );
+
+    setState(() {
+      widget.schedules.add(newlyAdded);
+    });
+    widget.onSchedulesChanged!(widget.schedules);
+
+    ScaffoldMessenger.of(context).clearSnackBars();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          isAdditional
+              ? "🎉 '${situation.name}' 외출 기록이 캘린더에 추가되었습니다."
               : "🎉 '${situation.name}' 체크리스트 완료! 캘린더에 기록이 자동 추가되었습니다.",
         ),
         behavior: SnackBarBehavior.floating,
-        action: newlyAdded != null
-            ? SnackBarAction(
-                label: '실행 취소',
-                onPressed: () {
-                  HapticFeedback.lightImpact();
-                  setState(() => widget.schedules.remove(newlyAdded));
-                  widget.onSchedulesChanged!(widget.schedules);
-                },
-              )
-            : null,
+        action: SnackBarAction(
+          label: '실행 취소',
+          onPressed: () {
+            HapticFeedback.lightImpact();
+            setState(() => widget.schedules.remove(newlyAdded));
+            widget.onSchedulesChanged!(widget.schedules);
+          },
+        ),
       ),
     );
   }
