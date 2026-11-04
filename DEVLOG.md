@@ -293,3 +293,25 @@
 
 ### 3. 검증 결과
 - `flutter analyze` 0 issues (No issues found!).
+
+---
+
+## 2026-11-05: 일정 탭 한달 뷰 및 축소 애니메이션 시 하단 4.3px 오버플로우 오류 해결
+
+### 1. 문제 원인 분석
+- **현상**: 일정 탭에서 한달 뷰(`_CalendarHeightStage.month`) 표시 중이거나 드래그/단계 변경 애니메이션으로 캘린더 높이가 줄어들 때 `A RenderFlex overflowed by 4.3 pixels on the bottom.` 오류 발생.
+- **원인**:
+  - `markerBuilder`에서 날짜 셀 상단 패딩을 고정 `top: 32`로 지정하여, 한달 뷰 및 축소 애니메이션 시 셀 높이(`rowHeight`)가 38~50px 수준으로 작아지면 배지 렌더링에 남는 높이가 6~18px에 불과해짐.
+  - 이 좁은 공간에 `events.take(2)`로 최대 2개의 텍스트 칩 배지(높이 약 22px 이상)를 `Column`으로 렌더링하면서, 남은 공간(약 16px) 대비 약 4.3px 초과 발생.
+
+### 2. 개선 및 수정 내용
+1. **셀 높이(`rowHeight`) 비례 반응형 상단 오프셋 및 높이 계산**:
+   - `topOffset = (rowHeight * 0.40).clamp(18.0, 27.0)`으로 날짜 숫자 영역과 배지 영역을 동적으로 분할.
+   - `availableHeight = (rowHeight - topOffset).clamp(0.0, rowHeight)` 계산.
+2. **높이에 따른 단계별 지능형 마커 렌더링**:
+   - `availableHeight < 14.0` (극단적 축소/드래그 중): 텍스트 배지 대신 4px 원형 도트 마커로 표시하여 레이아웃 깨짐 원천 차단.
+   - `14.0 <= availableHeight < 27.0` (일반적인 한달 뷰): 배지 1개 + 초과 건수(`+$extraCount`)로 표시하여 1줄 내에서 모든 일정 정보 전달 및 오버플로우 방지.
+   - `availableHeight >= 27.0` (확장 뷰 및 2주 뷰): 배지 최대 2개 렌더링.
+3. **오버플로우 방어막 구축**:
+   - 배지 컨테이너의 높이를 `height: 12.5`, 텍스트 `fontSize: 8.5, height: 1.1`로 콤팩트하게 정렬.
+   - `ClipRect` + `SizedBox` + `SingleChildScrollView(physics: NeverScrollableScrollPhysics())`로 감싸 시스템 글꼴 크기 변경이나 프레임 단위 애니메이션 중간에도 RenderFlex overflow 경고가 구조적으로 발생하지 않도록 완전 방어.

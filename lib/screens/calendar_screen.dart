@@ -1436,6 +1436,10 @@ class _CalendarScreenState extends State<CalendarScreen> {
                             titleCentered: true,
                             formatButtonVisible: false,
                           ),
+                          calendarStyle: const CalendarStyle(
+                            markersMaxCount: 2,
+                            cellMargin: EdgeInsets.all(2.0),
+                          ),
                           eventLoader: (day) => <Object>[
                             ..._getSchedulesForDay(day),
                             ..._getTodosForDay(day),
@@ -1463,74 +1467,144 @@ class _CalendarScreenState extends State<CalendarScreen> {
                               if (events.isEmpty) {
                                 return const SizedBox.shrink();
                               }
+
+                              // 셀 높이(rowHeight)에 비례한 상단 오프셋 계산 (날짜 텍스트 공간 확보)
+                              final topOffset =
+                                  (rowHeight * 0.40).clamp(18.0, 27.0);
+                              final availableHeight =
+                                  (rowHeight - topOffset).clamp(0.0, rowHeight);
+
+                              // 사용 가능한 높이가 너무 낮을 때(축소 드래그 중): 컬러 도트 마커로 안전하게 표시
+                              if (availableHeight < 14.0) {
+                                return Padding(
+                                  padding: EdgeInsets.only(top: topOffset),
+                                  child: SizedBox(
+                                    height: availableHeight,
+                                    child: Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
+                                      children: events.take(4).map((ev) {
+                                        Color dotColor = scheme.primary;
+                                        if (ev is Schedule) {
+                                          dotColor = _findSituationForSchedule(
+                                                      ev)
+                                                  ?.color ??
+                                              scheme.primary;
+                                        } else if (ev is TodoItem) {
+                                          dotColor = Colors.teal;
+                                        }
+                                        return Container(
+                                          margin: const EdgeInsets.symmetric(
+                                              horizontal: 1),
+                                          width: 4,
+                                          height: 4,
+                                          decoration: BoxDecoration(
+                                            color: dotColor,
+                                            shape: BoxShape.circle,
+                                          ),
+                                        );
+                                      }).toList(),
+                                    ),
+                                  ),
+                                );
+                              }
+
+                              // 높이에 따라 배지 개수 결정 (27px 미만이면 1개 및 +N건, 27px 이상이면 최대 2개)
+                              final int maxBadges =
+                                  availableHeight >= 27.0 ? 2 : 1;
+                              final displayEvents =
+                                  events.take(maxBadges).toList();
+
                               return Padding(
-                                padding: const EdgeInsets.only(top: 32),
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: events.take(2).map((ev) {
-                                    if (ev is Schedule) {
-                                      final sit = _findSituationForSchedule(ev);
-                                      final badgeColor =
-                                          sit?.color ?? scheme.primary;
-                                      return Container(
-                                        width: double.infinity,
-                                        margin: const EdgeInsets.symmetric(
-                                          horizontal: 2,
-                                          vertical: 0.5,
-                                        ),
-                                        padding: const EdgeInsets.symmetric(
-                                            horizontal: 3),
-                                        decoration: BoxDecoration(
-                                          color: badgeColor.withValues(
-                                              alpha: 0.2),
-                                          borderRadius:
-                                              BorderRadius.circular(3),
-                                        ),
-                                        child: Text(
-                                          ev.title,
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          textAlign: TextAlign.center,
-                                          style: TextStyle(
-                                            fontSize: 9,
-                                            fontWeight: FontWeight.w600,
-                                            color: badgeColor,
-                                          ),
-                                        ),
-                                      );
-                                    } else if (ev is TodoItem) {
-                                      return Container(
-                                        width: double.infinity,
-                                        margin: const EdgeInsets.symmetric(
-                                          horizontal: 2,
-                                          vertical: 0.5,
-                                        ),
-                                        padding: const EdgeInsets.symmetric(
-                                            horizontal: 3),
-                                        decoration: BoxDecoration(
-                                          color: Colors.teal
-                                              .withValues(alpha: 0.2),
-                                          borderRadius:
-                                              BorderRadius.circular(3),
-                                        ),
-                                        child: Text(
-                                          ev.title,
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          textAlign: TextAlign.center,
-                                          style: TextStyle(
-                                            fontSize: 9,
-                                            fontWeight: FontWeight.w600,
-                                            color: Colors.teal,
-                                            decoration: ev.isCompleted
-                                                ? TextDecoration.lineThrough
-                                                : null,
-                                          ),
-                                        ),
-                                      );
-                                    }
-                                    return const SizedBox.shrink();
-                                  }).toList(),
+                                padding: EdgeInsets.only(top: topOffset),
+                                child: ClipRect(
+                                  child: SizedBox(
+                                    height: availableHeight,
+                                    child: SingleChildScrollView(
+                                      physics:
+                                          const NeverScrollableScrollPhysics(),
+                                      child: Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          for (int i = 0;
+                                              i < displayEvents.length;
+                                              i++) ...[
+                                            Builder(
+                                              builder: (context) {
+                                                final ev = displayEvents[i];
+                                                final isLast = i ==
+                                                    displayEvents.length - 1;
+                                                final extraCount =
+                                                    events.length -
+                                                        displayEvents.length;
+                                                final extraText = (isLast &&
+                                                        extraCount > 0)
+                                                    ? ' +$extraCount'
+                                                    : '';
+
+                                                Color badgeColor =
+                                                    scheme.primary;
+                                                String title = '';
+                                                bool isCompleted = false;
+
+                                                if (ev is Schedule) {
+                                                  final sit =
+                                                      _findSituationForSchedule(
+                                                          ev);
+                                                  badgeColor = sit?.color ??
+                                                      scheme.primary;
+                                                  title = ev.title;
+                                                } else if (ev is TodoItem) {
+                                                  badgeColor = Colors.teal;
+                                                  title = ev.title;
+                                                  isCompleted = ev.isCompleted;
+                                                }
+
+                                                return Container(
+                                                  height: 12.5,
+                                                  width: double.infinity,
+                                                  margin:
+                                                      const EdgeInsets.symmetric(
+                                                    horizontal: 1.5,
+                                                    vertical: 0.5,
+                                                  ),
+                                                  padding:
+                                                      const EdgeInsets.symmetric(
+                                                          horizontal: 2.5),
+                                                  alignment: Alignment.center,
+                                                  decoration: BoxDecoration(
+                                                    color: badgeColor
+                                                        .withValues(alpha: 0.18),
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                            2.5),
+                                                  ),
+                                                  child: Text(
+                                                    '$title$extraText',
+                                                    maxLines: 1,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                    textAlign: TextAlign.center,
+                                                    style: TextStyle(
+                                                      fontSize: 8.5,
+                                                      height: 1.1,
+                                                      fontWeight:
+                                                          FontWeight.w600,
+                                                      color: badgeColor,
+                                                      decoration: isCompleted
+                                                          ? TextDecoration
+                                                              .lineThrough
+                                                          : null,
+                                                    ),
+                                                  ),
+                                                );
+                                              },
+                                            ),
+                                          ],
+                                        ],
+                                      ),
+                                    ),
+                                  ),
                                 ),
                               );
                             },
