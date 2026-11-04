@@ -67,7 +67,15 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
   bool _isGoogleTasksSynced = false;
   bool _isSyncingCalendar = false;
   bool _isSyncingTasks = false;
- String? _googleConnectedEmail;
+  String? _googleConnectedEmail;
+
+  // 동기화 버튼 5초 쓰로틀링(쿨다운) 및 백그라운드 2초 디바운스
+  DateTime? _lastCalendarSyncCompletedTime;
+  DateTime? _lastTasksSyncCompletedTime;
+  static const Duration _syncThrottleDuration = Duration(seconds: 5);
+  static const Duration _autoSyncDebounceDuration = Duration(seconds: 2);
+  Timer? _calendarDebounceTimer;
+  Timer? _tasksDebounceTimer;
 
   // 자동 포커싱 및 일정 시간 초기화 상태 관리
   String? _selectedSituationId;
@@ -88,6 +96,8 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     NotificationService.instance.onNotificationPayload.removeListener(_handleNotificationPayload);
     _lifecycleTimer?.cancel();
+    _calendarDebounceTimer?.cancel();
+    _tasksDebounceTimer?.cancel();
     _pageController.dispose();
     super.dispose();
   }
@@ -239,8 +249,45 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
     } catch (_) {}
   }
 
+  void _scheduleCalendarAutoSync() {
+    if (!_isGoogleCalendarSynced) return;
+    _calendarDebounceTimer?.cancel();
+    _calendarDebounceTimer = Timer(_autoSyncDebounceDuration, () {
+      if (mounted && _isGoogleCalendarSynced) {
+        _syncGoogleCalendar(silent: true);
+      }
+    });
+  }
+
+  void _scheduleTasksAutoSync() {
+    if (!_isGoogleTasksSynced) return;
+    _tasksDebounceTimer?.cancel();
+    _tasksDebounceTimer = Timer(_autoSyncDebounceDuration, () {
+      if (mounted && _isGoogleTasksSynced) {
+        _syncGoogleTasks(silent: true);
+      }
+    });
+  }
+
   Future<void> _syncGoogleCalendar({bool silent = false}) async {
     if (_isSyncingCalendar) return;
+
+    if (!silent && _lastCalendarSyncCompletedTime != null) {
+      final elapsed = DateTime.now().difference(_lastCalendarSyncCompletedTime!);
+      if (elapsed < _syncThrottleDuration) {
+        HapticFeedback.lightImpact();
+        _messengerKey.currentState?.clearSnackBars();
+        _messengerKey.currentState?.showSnackBar(
+          const SnackBar(
+            content: Text('방금 동기화되었습니다. 잠시 후 다시 시도해 주세요.'),
+            behavior: SnackBarBehavior.floating,
+            duration: Duration(seconds: 2),
+          ),
+        );
+        return;
+      }
+    }
+
     setState(() => _isSyncingCalendar = true);
 
     try {
@@ -280,11 +327,32 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
           ),
         );
       }
+    } finally {
+      if (!silent) {
+        _lastCalendarSyncCompletedTime = DateTime.now();
+      }
     }
   }
 
   Future<void> _syncGoogleTasks({bool silent = false}) async {
     if (_isSyncingTasks) return;
+
+    if (!silent && _lastTasksSyncCompletedTime != null) {
+      final elapsed = DateTime.now().difference(_lastTasksSyncCompletedTime!);
+      if (elapsed < _syncThrottleDuration) {
+        HapticFeedback.lightImpact();
+        _messengerKey.currentState?.clearSnackBars();
+        _messengerKey.currentState?.showSnackBar(
+          const SnackBar(
+            content: Text('방금 동기화되었습니다. 잠시 후 다시 시도해 주세요.'),
+            behavior: SnackBarBehavior.floating,
+            duration: Duration(seconds: 2),
+          ),
+        );
+        return;
+      }
+    }
+
     setState(() => _isSyncingTasks = true);
 
     try {
@@ -320,6 +388,10 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
             behavior: SnackBarBehavior.floating,
           ),
         );
+      }
+    } finally {
+      if (!silent) {
+        _lastTasksSyncCompletedTime = DateTime.now();
       }
     }
   }
@@ -525,7 +597,7 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
     }
     _evaluateScheduleLifecycle();
     if (_isGoogleCalendarSynced) {
-      _syncGoogleCalendar(silent: true);
+      _scheduleCalendarAutoSync();
     }
   }
 
@@ -591,7 +663,7 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
       setState(() {});
       _storage.saveTodos(_todos);
       if (_isGoogleTasksSynced) {
-        _syncGoogleTasks(silent: true);
+        _scheduleTasksAutoSync();
       }
     }
 
@@ -1135,7 +1207,7 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
                               final sitMap = {for (var s in _situations) s.name: s};
                               NotificationService.instance.syncScheduleNotifications(_schedules, situations: sitMap);
                               if (_isGoogleCalendarSynced) {
-                                _syncGoogleCalendar(silent: true);
+                                _scheduleCalendarAutoSync();
                               }
                             },
                             onSituationsChanged: (updated) {
@@ -1148,7 +1220,7 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
                               _storage.saveTodos(_todos);
                               NotificationService.instance.syncTodoNotifications(_todos);
                               if (_isGoogleTasksSynced) {
-                                _syncGoogleTasks(silent: true);
+                                _scheduleTasksAutoSync();
                               }
                             },
                           ),
@@ -1162,7 +1234,7 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
                               _storage.saveTodos(_todos);
                               NotificationService.instance.syncTodoNotifications(_todos);
                               if (_isGoogleTasksSynced) {
-                                _syncGoogleTasks(silent: true);
+                                _scheduleTasksAutoSync();
                               }
                             },
                           ),
@@ -1185,7 +1257,7 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
                               _storage.saveSchedules(_schedules);
                               _evaluateScheduleLifecycle();
                               if (_isGoogleCalendarSynced) {
-                                _syncGoogleCalendar(silent: true);
+                                _scheduleCalendarAutoSync();
                               }
                             },
                           ),

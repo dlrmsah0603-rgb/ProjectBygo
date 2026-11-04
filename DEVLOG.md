@@ -315,3 +315,26 @@
 3. **오버플로우 방어막 구축**:
    - 배지 컨테이너의 높이를 `height: 12.5`, 텍스트 `fontSize: 8.5, height: 1.1`로 콤팩트하게 정렬.
    - `ClipRect` + `SizedBox` + `SingleChildScrollView(physics: NeverScrollableScrollPhysics())`로 감싸 시스템 글꼴 크기 변경이나 프레임 단위 애니메이션 중간에도 RenderFlex overflow 경고가 구조적으로 발생하지 않도록 완전 방어.
+
+---
+
+## 2026-11-05: 동기화 버튼 쓰로틀링(5초) 및 백그라운드 디바운스(2초) 구현
+
+### 1. 요구사항 및 문제 배경
+- **과도한 연속 호출 방지**: 사용자가 캘린더나 할 일 상단/내부 동기화 버튼(🔄)을 빠르게 연속 클릭할 경우 불필요한 구글 API 호출 및 네트워크 트래픽이 낭비되는 문제 방지.
+- **백그라운드 자동 동기화 경합 방지**: 체크박스를 연속으로 체크하거나 일정 정보를 연속 수정할 때마다 즉시 동기화가 발생하여 구글 서버와의 레이스 컨디션 및 쿼터 초과 위험 완화.
+
+### 2. 개선 및 수정 내용
+1. **수동 동기화 버튼 5초 쓰로틀링 (쿨다운) 적용**:
+   - 캘린더 및 할 일 수동 동기화 완료 시점(`finally`)을 기준으로 5초간(`_syncThrottleDuration = Duration(seconds: 5)`) 쿨다운 타이머 가동.
+   - 5초 쿨다운 도중 사용자가 다시 동기화 버튼을 누르면 `HapticFeedback.lightImpact()`와 함께 `"방금 동기화되었습니다. 잠시 후 다시 시도해 주세요."` 안내 스낵바를 띄우고 즉시 차단.
+   - 동기화 진행 중에는 기존과 동일하게 프로그레스 인디케이터 표시 및 버튼 비활성화(`onPressed: null`) 유지.
+2. **백그라운드 자동 동기화 2초 디바운스 (Debounce) 분리 적용**:
+   - `_scheduleCalendarAutoSync()` 및 `_scheduleTasksAutoSync()` 구현.
+   - 일정이나 할 일이 등록/수정/삭제될 때 즉시 네트워크 요청을 보내지 않고 2초간(`Duration(seconds: 2)`) 타이머 대기.
+   - 2초 이내 추가 수정이 발생하면 기존 타이머를 취소하고 새로 2초를 기다려 최종 상태만 1회 백그라운드 동기화(`silent: true`) 수행.
+3. **생명주기 안전성 보장**:
+   - `dispose()`에서 `_calendarDebounceTimer` 및 `_tasksDebounceTimer` 취소 처리로 메모리 누수 방지.
+
+### 3. 검증 결과
+- `flutter analyze` 0 issues (No issues found!).
