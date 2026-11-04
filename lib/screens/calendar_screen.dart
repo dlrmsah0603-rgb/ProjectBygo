@@ -236,7 +236,12 @@ class _CalendarScreenState extends State<CalendarScreen> {
       if (!mounted) return;
       setState(() => _localSyncing = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('구글 캘린더 동기화 실패: $e')),
+        SnackBar(
+          content: Text(
+            GoogleSyncService.formatSyncError(e, featureName: '구글 캘린더'),
+          ),
+          behavior: SnackBarBehavior.floating,
+        ),
       );
     }
   }

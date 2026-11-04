@@ -87,7 +87,12 @@ class _TodoScreenState extends State<TodoScreen> {
       if (!mounted) return;
       setState(() => _localSyncing = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('구글 태스크 동기화 실패: $e')),
+        SnackBar(
+          content: Text(
+            GoogleSyncService.formatSyncError(e, featureName: '구글 할 일'),
+          ),
+          behavior: SnackBarBehavior.floating,
+        ),
       );
     }
   }

@@ -268,3 +268,28 @@
 3. **데이터 정합성 및 백업 검증**:
    - 태스크 동기화 시 외부 작성 메모가 지워지지 않고 구분선과 함께 안전하게 보존됨 확인.
    - 드라이브 백업 시 최대 5개 버전 유지 및 선택 복원 다이얼로그 정상 작동 확인.
+
+---
+
+## 2026-11-05: Google 캘린더 연동 오류 수정 및 사용자 친화적 에러 메시지 정돈
+
+### 1. 문제 분석
+- **Google Calendar API 미활성화 (403 Forbidden)**:
+  - GCP 콘솔 프로젝트(`1069776834440`)에서 Tasks API는 켜져 있었으나 Google Calendar API(`calendar-json.googleapis.com`)가 활성화되어 있지 않아 403 오류 반환.
+- **`cal.EventDateTime` 포맷 충돌**:
+  - `dateTime: startDt.toUtc()`와 `timeZone: 'Asia/Seoul'`을 동시 전달하여 발생하던 API 400 오류 해결.
+- **기술적 상세 오류 원문 노출**:
+  - `DetailedApiRequestError(status: 403, ...)` 등 긴 URL 및 프로젝트 식별자가 포함된 원문 오류가 화면 스낵바에 그대로 출력되던 문제.
+
+### 2. 개선 및 수정 내용
+1. **오류 메시지 사용자 친화적 변환 (`GoogleSyncService.formatSyncError`)**:
+   - GCP API 미활성화 시: `"Google Cloud Console에서 [기능명] API 활성화가 필요합니다."`로 간결하게 요약 표시.
+   - 접근 권한 거부 시: `"[기능명] 접근 권한이 없거나 거부되었습니다."`
+   - 네트워크 이상 시: `"네트워크 연결 상태를 확인한 후 다시 시도해 주세요."`
+   - 긴 시스템 URL, 패키지 내부 예외 클래스명, 프로젝트 ID 등의 원문 노출 전면 차단.
+2. **양방향 동기화 및 목(Mock) ID 정제**:
+   - 목(Mock) 폴백 완전 제거 및 기존 목 ID(`gcal_`, `gtask_`) 자동 감지 후 실제 Google ID로 재발급 `insert`.
+   - `CalendarScreen` 및 `TodoScreen`에서 변경 시 실시간 자동 동기화 트리거 바인딩.
+
+### 3. 검증 결과
+- `flutter analyze` 0 issues (No issues found!).

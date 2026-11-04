@@ -34,6 +34,28 @@ class GoogleSyncService {
   GoogleSyncService._();
   static final GoogleSyncService instance = GoogleSyncService._();
 
+  /// 사용자 화면에 출력할 간결하고 정돈된 동기화 안내 문구를 반환합니다. (상세 시스템/API 오류 내용은 노출하지 않음)
+  static String formatSyncError(dynamic error, {required String featureName}) {
+    final str = error.toString();
+    if (str.contains('calendar-json.googleapis.com') ||
+        str.contains('has not been used in project') ||
+        str.contains('it is disabled')) {
+      return '$featureName 동기화 실패: Google Cloud Console에서 $featureName API 활성화가 필요합니다.';
+    }
+    if (str.contains('403') ||
+        str.contains('Access denied') ||
+        str.contains('insufficientPermissions')) {
+      return '$featureName 접근 권한이 없거나 거부되었습니다.';
+    }
+    if (str.contains('SocketException') ||
+        str.contains('Failed host lookup') ||
+        str.contains('NetworkImage') ||
+        str.contains('HandshakeException')) {
+      return '네트워크 연결 상태를 확인한 후 다시 시도해 주세요.';
+    }
+    return '$featureName 동기화에 실패했습니다. 잠시 후 다시 시도해 주세요.';
+  }
+
   static const String calendarScope = cal.CalendarApi.calendarScope;
   static const String tasksScope = tasks.TasksApi.tasksScope;
   static const String driveAppDataScope = drive.DriveApi.driveAppdataScope;
@@ -97,7 +119,7 @@ class GoogleSyncService {
       }
     } catch (e) {
       lastAuthError =
-          '구글 계정 인증에 실패했습니다 ($e). GCP OAuth 클라이언트 ID 및 키해시(SHA-1) 설정을 확인해 주세요.';
+          '구글 계정 인증에 실패했습니다. GCP OAuth 클라이언트 ID 및 키해시(SHA-1) 설정을 확인해 주세요.';
       try {
         await _googleSignIn.signOut();
       } catch (_) {}
@@ -131,7 +153,7 @@ class GoogleSyncService {
         lastAuthError = '권한 요청이 거부되었습니다. 다시 스위치를 켜서 권한을 허용해 주세요.';
       }
     } catch (e) {
-      lastAuthError = '권한 요청 중 오류가 발생했습니다 ($e).';
+      lastAuthError = '권한 요청 중 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.';
     }
 
     // 권한 획득 실패 시 네이티브 플러그인의 requestedScopes 목록에서 거부된 scope를 제거하기 위해 인스턴스 재구성
@@ -177,18 +199,19 @@ class GoogleSyncService {
           : null;
 
       if (httpClient == null) {
-        return _runLocalMockScheduleSync(workingList);
+        throw Exception('Google 계정에 로그인되어 있지 않거나 인증 클라이언트를 생성할 수 없습니다. 설정에서 다시 로그인해 주세요.');
       }
 
       final calendarApi = cal.CalendarApi(httpClient);
       final now = DateTime.now();
-      final timeMin = DateTime(now.year, now.month - 3, now.day).toUtc();
-      final timeMax = DateTime(now.year + 1, now.month, now.day).toUtc();
+      final timeMin = DateTime(now.year - 1, 1, 1).toUtc();
+      final timeMax = DateTime(now.year + 2, 12, 31, 23, 59, 59).toUtc();
 
       final eventsResult = await calendarApi.events.list(
         'primary',
         timeMin: timeMin,
         timeMax: timeMax,
+        maxResults: 2500,
         singleEvents: false,
         showDeleted: true,
       );
@@ -210,7 +233,9 @@ class GoogleSyncService {
       for (final local in workingList) {
         // 1) 로컬 휴지통(Soft Delete) 항목 처리
         if (local.isDeleted) {
-          if (local.googleEventId != null && local.googleEventId!.isNotEmpty) {
+          if (local.googleEventId != null &&
+              local.googleEventId!.trim().isNotEmpty &&
+              !local.googleEventId!.startsWith('gcal_')) {
             try {
               await calendarApi.events.delete('primary', local.googleEventId!);
             } catch (_) {}
@@ -220,8 +245,12 @@ class GoogleSyncService {
           continue; // 영구 삭제 (survivors에 넣지 않음)
         }
 
-        // 2) 아직 구글에 올라가지 않은 신규 로컬 일정 -> Insert
-        if (local.googleEventId == null || local.googleEventId!.isEmpty) {
+        // 2) 아직 구글에 올라가지 않은 신규 로컬 일정 또는 이전 목(mock) ID 일정 -> Insert
+        final isNotUploadedYet = local.googleEventId == null ||
+            local.googleEventId!.trim().isEmpty ||
+            local.googleEventId!.startsWith('gcal_');
+
+        if (isNotUploadedYet) {
           final eventToInsert = _scheduleToGoogleEvent(local, situations);
           final created = await calendarApi.events.insert(
             eventToInsert,
@@ -242,9 +271,15 @@ class GoogleSyncService {
         processedGoogleIds.add(gid);
         final remote = remoteMap[gid];
 
-        if (remote == null || remote.status == 'cancelled') {
-          // 외부(구글 웹)에서 삭제된 일정 감지 -> 앱에서도 삭제 동기화
+        if (remote != null && remote.status == 'cancelled') {
+          // 외부(구글 웹)에서 삭제(취소)된 일정 감지 -> 앱에서도 삭제 동기화
           deleted++;
+          continue;
+        }
+
+        if (remote == null) {
+          // 검색 범위 밖이거나 일시적 조회 누락 시 로컬 일정 안전 보존
+          survivors.add(local);
           continue;
         }
 
@@ -301,42 +336,12 @@ class GoogleSyncService {
         message:
             '구글 캘린더 동기화 완료 (업로드 $uploaded · 가져오기 $downloaded · 삭제 $deleted)',
       );
-    } catch (e) {
-      return _runLocalMockScheduleSync(workingList);
+    } catch (e, stack) {
+      debugPrint('[GoogleSyncService] syncSchedules error: $e\n$stack');
+      rethrow;
     }
   }
 
-  SyncResult<Schedule> _runLocalMockScheduleSync(List<Schedule> workingList) {
-    int uploaded = 0;
-    int deleted = 0;
-    final survivors = <Schedule>[];
-
-    for (final item in workingList) {
-      if (item.isDeleted) {
-        deleted++;
-        continue;
-      }
-      if (item.googleEventId == null || item.googleEventId!.isEmpty) {
-        survivors.add(item.copyWith(
-          googleEventId: 'gcal_${item.id}',
-          lastEditedTime: DateTime.now(),
-        ));
-        uploaded++;
-      } else {
-        survivors.add(item);
-      }
-    }
-
-    return SyncResult<Schedule>(
-      items: survivors,
-      uploadedCount: uploaded,
-      downloadedCount: 0,
-      deletedCount: deleted,
-      usedMockFallback: true,
-      message:
-          '구글 캘린더 동기화 완료 (반영 $uploaded건 · 휴지통 정리 $deleted건)',
-    );
-  }
 
   // ===========================================================================
   // 2. 구글 태스크 양방향 동기화 (TodoItems - @default 목록)
@@ -357,7 +362,7 @@ class GoogleSyncService {
           : null;
 
       if (httpClient == null) {
-        return _runLocalMockTodoSync(workingList);
+        throw Exception('Google 계정에 로그인되어 있지 않거나 인증 클라이언트를 생성할 수 없습니다. 설정에서 다시 로그인해 주세요.');
       }
 
       final tasksApi = tasks.TasksApi(httpClient);
@@ -386,7 +391,9 @@ class GoogleSyncService {
       for (final local in workingList) {
         // 1) 로컬 휴지통(Soft Delete) 처리
         if (local.isDeleted) {
-          if (local.googleTaskId != null && local.googleTaskId!.isNotEmpty) {
+          if (local.googleTaskId != null &&
+              local.googleTaskId!.trim().isNotEmpty &&
+              !local.googleTaskId!.startsWith('gtask_')) {
             try {
               await tasksApi.tasks.delete('@default', local.googleTaskId!);
             } catch (_) {}
@@ -396,8 +403,12 @@ class GoogleSyncService {
           continue;
         }
 
-        // 2) 신규 로컬 할 일 -> 구글 태스크 Insert
-        if (local.googleTaskId == null || local.googleTaskId!.isEmpty) {
+        // 2) 아직 구글에 올라가지 않은 신규 로컬 할 일 또는 이전 목(mock) ID 할 일 -> 구글 태스크 Insert
+        final isNotUploadedYet = local.googleTaskId == null ||
+            local.googleTaskId!.trim().isEmpty ||
+            local.googleTaskId!.startsWith('gtask_');
+
+        if (isNotUploadedYet) {
           final taskToInsert = _todoToGoogleTask(local);
           final created = await tasksApi.tasks.insert(taskToInsert, '@default');
           final updatedLocal = local.copyWith(
@@ -415,9 +426,15 @@ class GoogleSyncService {
         processedTaskIds.add(tid);
         final remote = remoteMap[tid];
 
-        if (remote == null || remote.deleted == true) {
+        if (remote != null && remote.deleted == true) {
           // 구글 태스크에서 삭제된 경우 로컬에서도 삭제
           deleted++;
+          continue;
+        }
+
+        if (remote == null) {
+          // 일시적 조회 누락 시 로컬 할 일 안전 보존
+          survivors.add(local);
           continue;
         }
 
@@ -475,42 +492,12 @@ class GoogleSyncService {
         message:
             '구글 태스크 동기화 완료 (업로드 $uploaded · 가져오기 $downloaded · 삭제 $deleted)',
       );
-    } catch (e) {
-      return _runLocalMockTodoSync(workingList);
+    } catch (e, stack) {
+      debugPrint('[GoogleSyncService] syncTodos error: $e\n$stack');
+      rethrow;
     }
   }
 
-  SyncResult<TodoItem> _runLocalMockTodoSync(List<TodoItem> workingList) {
-    int uploaded = 0;
-    int deleted = 0;
-    final survivors = <TodoItem>[];
-
-    for (final item in workingList) {
-      if (item.isDeleted) {
-        deleted++;
-        continue;
-      }
-      if (item.googleTaskId == null || item.googleTaskId!.isEmpty) {
-        survivors.add(item.copyWith(
-          googleTaskId: 'gtask_${item.id}',
-          lastEditedTime: DateTime.now(),
-        ));
-        uploaded++;
-      } else {
-        survivors.add(item);
-      }
-    }
-
-    return SyncResult<TodoItem>(
-      items: survivors,
-      uploadedCount: uploaded,
-      downloadedCount: 0,
-      deletedCount: deleted,
-      usedMockFallback: true,
-      message:
-          '구글 태스크 동기화 완료 (반영 $uploaded건 · 휴지통 정리 $deleted건)',
-    );
-  }
 
   // ===========================================================================
   // 3. 변환 유틸리티: Schedule <-> Google Calendar Event (RRULE & Color & ExtendedProps)
@@ -547,13 +534,10 @@ class GoogleSyncService {
     final rrule = _scheduleToRRule(schedule);
 
     return cal.Event(
-      summary: schedule.title,
+      summary: schedule.title.trim().isEmpty ? '(일정)' : schedule.title.trim(),
       colorId: googleColorId,
-      start: cal.EventDateTime(
-        dateTime: startDt.toUtc(),
-        timeZone: 'Asia/Seoul',
-      ),
-      end: cal.EventDateTime(dateTime: endDt.toUtc(), timeZone: 'Asia/Seoul'),
+      start: cal.EventDateTime(dateTime: startDt.toUtc()),
+      end: cal.EventDateTime(dateTime: endDt.toUtc()),
       recurrence: rrule != null ? <String>[rrule] : null,
       extendedProperties: cal.EventExtendedProperties(private: privateProps),
     );

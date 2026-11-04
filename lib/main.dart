@@ -272,7 +272,12 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
       setState(() => _isSyncingCalendar = false);
       if (!silent) {
         _messengerKey.currentState?.showSnackBar(
-          SnackBar(content: Text('캘린더 동기화 중 오류가 발생했습니다: $e')),
+          SnackBar(
+            content: Text(
+              GoogleSyncService.formatSyncError(e, featureName: '구글 캘린더'),
+            ),
+            behavior: SnackBarBehavior.floating,
+          ),
         );
       }
     }
@@ -308,7 +313,12 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
       setState(() => _isSyncingTasks = false);
       if (!silent) {
         _messengerKey.currentState?.showSnackBar(
-          SnackBar(content: Text('할 일 동기화 중 오류가 발생했습니다: $e')),
+          SnackBar(
+            content: Text(
+              GoogleSyncService.formatSyncError(e, featureName: '구글 할 일'),
+            ),
+            behavior: SnackBarBehavior.floating,
+          ),
         );
       }
     }
@@ -514,6 +524,9 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
       }
     }
     _evaluateScheduleLifecycle();
+    if (_isGoogleCalendarSynced) {
+      _syncGoogleCalendar(silent: true);
+    }
   }
 
   DateTime _getLatestDailyResetThreshold(DateTime now) {
@@ -1112,12 +1125,18 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
                             situations: _situations,
                             todos: _todos,
                             showTips: _showTips,
+                            onSyncGoogleCalendar: () => _syncGoogleCalendar(silent: false),
                             onScheduleSavedOrUpdated:
                                 _handleScheduleSavedOrUpdated,
                             onSchedulesChanged: (updated) {
                               setState(() => _schedules = List.from(updated));
                               _storage.saveSchedules(_schedules);
                               _evaluateScheduleLifecycle();
+                              final sitMap = {for (var s in _situations) s.name: s};
+                              NotificationService.instance.syncScheduleNotifications(_schedules, situations: sitMap);
+                              if (_isGoogleCalendarSynced) {
+                                _syncGoogleCalendar(silent: true);
+                              }
                             },
                             onSituationsChanged: (updated) {
                               setState(() => _situations = List.from(updated));
@@ -1128,15 +1147,23 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
                               setState(() => _todos = List.from(updated));
                               _storage.saveTodos(_todos);
                               NotificationService.instance.syncTodoNotifications(_todos);
+                              if (_isGoogleTasksSynced) {
+                                _syncGoogleTasks(silent: true);
+                              }
                             },
                           ),
                           // 1: 할 일 탭
                           TodoScreen(
                             todos: _todos,
                             showTips: _showTips,
+                            onSyncGoogleTasks: () => _syncGoogleTasks(silent: false),
                             onTodosChanged: (updated) {
                               setState(() => _todos = List.from(updated));
                               _storage.saveTodos(_todos);
+                              NotificationService.instance.syncTodoNotifications(_todos);
+                              if (_isGoogleTasksSynced) {
+                                _syncGoogleTasks(silent: true);
+                              }
                             },
                           ),
                           // 2: 상황·체크리스트 탭
@@ -1157,6 +1184,9 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
                               setState(() => _schedules = List.from(updated));
                               _storage.saveSchedules(_schedules);
                               _evaluateScheduleLifecycle();
+                              if (_isGoogleCalendarSynced) {
+                                _syncGoogleCalendar(silent: true);
+                              }
                             },
                           ),
                           // 3: 설정 탭
