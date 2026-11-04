@@ -127,6 +127,7 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
     }
   }
   Future<void> _loadInitialData() async {
+    await SettingsScreen.ensureSyncPrefsLoaded();
     final schedules = await _storage.loadSchedules();
     final situations = await _storage.loadSituations();
     final todos = await _storage.loadTodos();
@@ -188,12 +189,54 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
   // 구글 캘린더 / 태스크 양방향 동기화 제어
   // ===========================================================================
   Future<void> _triggerBackgroundAutoSync() async {
-    if (_isGoogleCalendarSynced) {
+    final savedEmail = SettingsScreen.googleEmailNotifier.value;
+    if (savedEmail == null || savedEmail.trim().isEmpty) {
+      return;
+    }
+
+    final calSynced = SettingsScreen.googleCalendarSyncNotifier.value;
+    final taskSynced = SettingsScreen.googleTasksSyncNotifier.value;
+    final driveSynced = SettingsScreen.googleDriveSyncNotifier.value;
+
+    if (!GoogleSyncService.instance.isSignedIn) {
+      final expectedScopes = <String>[
+        if (calSynced) GoogleSyncService.calendarScope,
+        if (taskSynced) GoogleSyncService.tasksScope,
+        if (driveSynced) GoogleSyncService.driveAppDataScope,
+      ];
+      final restored = await GoogleSyncService.instance.restoreSessionSilently(
+        expectedScopes: expectedScopes,
+      );
+      if (restored == null) {
+        return;
+      }
+    }
+
+    if (calSynced) {
       await _syncGoogleCalendar(silent: true);
     }
-    if (_isGoogleTasksSynced) {
+    if (taskSynced) {
       await _syncGoogleTasks(silent: true);
     }
+    if (driveSynced) {
+      await _checkAndPerformDailyDriveBackup();
+    }
+  }
+
+  Future<void> _checkAndPerformDailyDriveBackup() async {
+    try {
+      final lastBackup = await _storage.loadLastGoogleDriveBackupTime();
+      final now = DateTime.now();
+      if (lastBackup == null || now.difference(lastBackup).inHours >= 24) {
+        final jsonStr = await _storage.buildBackupJsonString();
+        final fileId = await GoogleSyncService.instance.backupJsonToDrive(
+          jsonContent: jsonStr,
+        );
+        if (fileId != null) {
+          await _storage.saveLastGoogleDriveBackupTime(now);
+        }
+      }
+    } catch (_) {}
   }
 
   Future<void> _syncGoogleCalendar({bool silent = false}) async {
@@ -274,16 +317,27 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
   // ignore: unused_element
   Future<void> _toggleGoogleCalendarSync(bool enabled) async {
     if (enabled) {
-      final email =
-          await GoogleSyncService.instance.signIn(allowMockFallback: true);
-      if (email == null) return;
+      final email = await GoogleSyncService.instance.signIn();
+      if (email == null) {
+        final err = GoogleSyncService.instance.lastAuthError ?? 'Google 계정 연동에 실패했습니다.';
+        _messengerKey.currentState?.showSnackBar(
+          SnackBar(content: Text(err), backgroundColor: Colors.redAccent, behavior: SnackBarBehavior.floating),
+        );
+        return;
+      }
+      final scopeOk = await GoogleSyncService.instance.ensureScope(GoogleSyncService.calendarScope);
+      if (!scopeOk) {
+        _messengerKey.currentState?.showSnackBar(
+          const SnackBar(content: Text('Google 캘린더 접근 권한이 허용되지 않았습니다.'), backgroundColor: Colors.redAccent, behavior: SnackBarBehavior.floating),
+        );
+        return;
+      }
       setState(() {
         _isGoogleCalendarSynced = true;
         _googleConnectedEmail = email;
       });
       await _syncGoogleCalendar(silent: false);
     } else {
-      // 연동 해제 시 이미 가져온 로컬 일정 데이터는 그대로 유지
       setState(() => _isGoogleCalendarSynced = false);
       if (!_isGoogleTasksSynced) {
         await GoogleSyncService.instance.signOut();
@@ -301,16 +355,27 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
   // ignore: unused_element
   Future<void> _toggleGoogleTasksSync(bool enabled) async {
     if (enabled) {
-      final email =
-          await GoogleSyncService.instance.signIn(allowMockFallback: true);
-      if (email == null) return;
+      final email = await GoogleSyncService.instance.signIn();
+      if (email == null) {
+        final err = GoogleSyncService.instance.lastAuthError ?? 'Google 계정 연동에 실패했습니다.';
+        _messengerKey.currentState?.showSnackBar(
+          SnackBar(content: Text(err), backgroundColor: Colors.redAccent, behavior: SnackBarBehavior.floating),
+        );
+        return;
+      }
+      final scopeOk = await GoogleSyncService.instance.ensureScope(GoogleSyncService.tasksScope);
+      if (!scopeOk) {
+        _messengerKey.currentState?.showSnackBar(
+          const SnackBar(content: Text('Google 태스크 접근 권한이 허용되지 않았습니다.'), backgroundColor: Colors.redAccent, behavior: SnackBarBehavior.floating),
+        );
+        return;
+      }
       setState(() {
         _isGoogleTasksSynced = true;
         _googleConnectedEmail = email;
       });
       await _syncGoogleTasks(silent: false);
     } else {
-      // 연동 해제 시 이미 가져온 로컬 할 일 데이터는 그대로 유지
       setState(() => _isGoogleTasksSynced = false);
       if (!_isGoogleCalendarSynced) {
         await GoogleSyncService.instance.signOut();
@@ -983,51 +1048,46 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
                   ),
                   centerTitle: false,
                   actions: [
-                    // 캘린더 탭(0)이고 구글 캘린더 연동 활성화 시 동기화 버튼
-                    /*
-                    if (_currentIndex == 0 && _isGoogleCalendarSynced)
-                      IconButton(
-                        tooltip: 'Google 캘린더 동기화',
-                        onPressed: _isSyncingCalendar
-                            ? null
-                            : () => _syncGoogleCalendar(silent: false),
-                        icon: _isSyncingCalendar
-                            ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child:
-                                    CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : const Icon(Icons.sync),
+                    if (_currentIndex == 0)
+                      ValueListenableBuilder<bool>(
+                        valueListenable: SettingsScreen.googleCalendarSyncNotifier,
+                        builder: (ctx, calSynced, _) {
+                          if (!calSynced) return const SizedBox.shrink();
+                          return IconButton(
+                            tooltip: 'Google 캘린더 동기화',
+                            onPressed: _isSyncingCalendar
+                                ? null
+                                : () => _syncGoogleCalendar(silent: false),
+                            icon: _isSyncingCalendar
+                                ? const SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(strokeWidth: 2),
+                                  )
+                                : const Icon(Icons.sync),
+                          );
+                        },
                       ),
-                    // 할 일 탭(1)이고 구글 태스크 연동 활성화 시 동기화 버튼 표시
-                    if (_currentIndex == 1 && _isGoogleTasksSynced)
-                      IconButton(
-                        tooltip: 'Google 태스크 동기화',
-                        onPressed: _isSyncingTasks
-                            ? null
-                            : () => _syncGoogleTasks(silent: false),
-                        icon: _isSyncingTasks
-                            ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child:
-                                    CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : const Icon(Icons.sync),
+                    if (_currentIndex == 1)
+                      ValueListenableBuilder<bool>(
+                        valueListenable: SettingsScreen.googleTasksSyncNotifier,
+                        builder: (ctx, tasksSynced, _) {
+                          if (!tasksSynced) return const SizedBox.shrink();
+                          return IconButton(
+                            tooltip: 'Google 태스크 동기화',
+                            onPressed: _isSyncingTasks
+                                ? null
+                                : () => _syncGoogleTasks(silent: false),
+                            icon: _isSyncingTasks
+                                ? const SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(strokeWidth: 2),
+                                  )
+                                : const Icon(Icons.sync),
+                          );
+                        },
                       ),
-                    // 구글 연동 설정 다이얼로그 열기 버튼
-                    IconButton(
-                      tooltip: 'Google 캘린더/태스크 연동 설정',
-                      icon: Icon(
-                        (_isGoogleCalendarSynced || _isGoogleTasksSynced)
-                            ? Icons.cloud_done_outlined
-                            : Icons.cloud_sync_outlined,
-                      ),
-                      onPressed: () =>
-                          _showGoogleSyncSettingsDialog(innerContext),
-                    ),
-                    */
                   ],
                 ),
                 body: Column(
@@ -1124,6 +1184,18 @@ class _BygoAppState extends State<BygoApp> with WidgetsBindingObserver {
                             },
                             onShowHomeWidgetPanelChanged: (val) {
                               setState(() => _showHomeWidgetPanel = val);
+                            },
+                            onGoogleCalendarSyncChanged: (enabled) {
+                              setState(() => _isGoogleCalendarSynced = enabled);
+                              if (enabled) {
+                                _syncGoogleCalendar(silent: false);
+                              }
+                            },
+                            onGoogleTasksSyncChanged: (enabled) {
+                              setState(() => _isGoogleTasksSynced = enabled);
+                              if (enabled) {
+                                _syncGoogleTasks(silent: false);
+                              }
                             },
                             onExportBackup: () => _storage.exportBackupJson(),
                             onImportBackup: ([rawJson]) async {

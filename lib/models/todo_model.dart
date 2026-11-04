@@ -437,18 +437,50 @@ class TodoItem {
   }
 
   // --- 구글 태스크 설명란(Notes) 텍스트 포맷팅 및 역파싱 ---
-  String toGoogleTaskNotes() {
-    final buffer = StringBuffer();
-    if (dueTime != null && dueTime!.trim().isNotEmpty) {
-      buffer.writeln('⏰ 시간: ${dueTime!.trim()}');
-    }
-    if (subItems.isNotEmpty) {
-      if (buffer.isNotEmpty) buffer.writeln();
-      for (final sub in subItems) {
-        buffer.writeln('${sub.isChecked ? "[x]" : "[ ]"} ${sub.name}');
+  static const String bygoNotesDivider = '--- Bygo Info ---';
+
+  String toGoogleTaskNotes({String? existingRawNotes}) {
+    String userNotesPrefix = '';
+    if (existingRawNotes != null && existingRawNotes.trim().isNotEmpty) {
+      final divIdx = existingRawNotes.indexOf(bygoNotesDivider);
+      if (divIdx >= 0) {
+        userNotesPrefix = existingRawNotes.substring(0, divIdx).trim();
+      } else {
+        final nonBygoLines = existingRawNotes
+            .split('\n')
+            .where((l) => !l.trim().startsWith('⏰ 시간:') &&
+                !l.trim().startsWith('[x]') &&
+                !l.trim().startsWith('[X]') &&
+                !l.trim().startsWith('[ ]'))
+            .map((l) => l.trim())
+            .where((l) => l.isNotEmpty)
+            .toList();
+        if (nonBygoLines.isNotEmpty) {
+          userNotesPrefix = nonBygoLines.join('\n');
+        }
       }
     }
-    return buffer.toString().trim();
+
+    final bygoBuffer = StringBuffer();
+    if (dueTime != null && dueTime!.trim().isNotEmpty) {
+      bygoBuffer.writeln('⏰ 시간: ${dueTime!.trim()}');
+    }
+    if (subItems.isNotEmpty) {
+      for (final sub in subItems) {
+        final checkPrefix = sub.isChecked ? '[x] ' : '[ ] ';
+        bygoBuffer.writeln('$checkPrefix${sub.name}');
+      }
+    }
+
+    final bygoText = bygoBuffer.toString().trim();
+    if (userNotesPrefix.isNotEmpty && bygoText.isNotEmpty) {
+      return '$userNotesPrefix\n\n$bygoNotesDivider\n$bygoText';
+    } else if (userNotesPrefix.isNotEmpty) {
+      return userNotesPrefix;
+    } else if (bygoText.isNotEmpty) {
+      return '$bygoNotesDivider\n$bygoText';
+    }
+    return '';
   }
 
   void applyFromGoogleTaskNotes(String? notes) {
@@ -459,6 +491,8 @@ class TodoItem {
 
     for (final rawLine in lines) {
       final line = rawLine.trim();
+      if (line == bygoNotesDivider) continue;
+
       if (line.startsWith('⏰ 시간:')) {
         parsedTime = line.replaceFirst('⏰ 시간:', '').trim();
       } else if (line.startsWith('[x]') || line.startsWith('[X]')) {
@@ -489,7 +523,6 @@ class TodoItem {
       subItems = parsedSubs;
     }
   }
-
   Map<String, dynamic> toJson() => {
         'id': id,
         'title': title,

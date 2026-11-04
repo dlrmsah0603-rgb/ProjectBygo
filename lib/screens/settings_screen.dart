@@ -88,6 +88,7 @@ class SettingsScreen extends StatefulWidget {
 
   static const String prefKeyGoogleCalSync = 'bygo_google_calendar_sync_enabled';
   static const String prefKeyGoogleTaskSync = 'bygo_google_tasks_sync_enabled';
+  static const String prefKeyGoogleDriveSync = 'bygo_google_drive_sync_enabled';
   static const String prefKeyGoogleEmail = 'bygo_google_connected_email';
   static const String prefKeyDailyResetTime = 'bygo_daily_reset_time';
   static const String prefKeyAutoResetDaily = 'bygo_auto_reset_daily';
@@ -96,6 +97,8 @@ class SettingsScreen extends StatefulWidget {
   static final ValueNotifier<bool> googleCalendarSyncNotifier =
       ValueNotifier<bool>(false);
   static final ValueNotifier<bool> googleTasksSyncNotifier =
+      ValueNotifier<bool>(false);
+  static final ValueNotifier<bool> googleDriveSyncNotifier =
       ValueNotifier<bool>(false);
   static final ValueNotifier<String?> googleEmailNotifier =
       ValueNotifier<String?>(null);
@@ -107,11 +110,28 @@ class SettingsScreen extends StatefulWidget {
     _prefsInitialized = true;
     try {
       final prefs = await SharedPreferences.getInstance();
+      final savedEmail = prefs.getString(prefKeyGoogleEmail);
+      // 과거 모의 이메일(bygo.local.sync@gmail.com)이나 이메일 없는 상태 정리
+      if (savedEmail == null ||
+          savedEmail.trim().isEmpty ||
+          savedEmail == 'bygo.local.sync@gmail.com') {
+        await prefs.remove(prefKeyGoogleEmail);
+        await prefs.setBool(prefKeyGoogleCalSync, false);
+        await prefs.setBool(prefKeyGoogleTaskSync, false);
+        await prefs.setBool(prefKeyGoogleDriveSync, false);
+        googleEmailNotifier.value = null;
+        googleCalendarSyncNotifier.value = false;
+        googleTasksSyncNotifier.value = false;
+        googleDriveSyncNotifier.value = false;
+        return;
+      }
+      googleEmailNotifier.value = savedEmail;
       googleCalendarSyncNotifier.value =
           prefs.getBool(prefKeyGoogleCalSync) ?? false;
       googleTasksSyncNotifier.value =
           prefs.getBool(prefKeyGoogleTaskSync) ?? false;
-      googleEmailNotifier.value = prefs.getString(prefKeyGoogleEmail);
+      googleDriveSyncNotifier.value =
+          prefs.getBool(prefKeyGoogleDriveSync) ?? false;
     } catch (_) {}
   }
 
@@ -170,48 +190,123 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } catch (_) {}
   }
 
-  // ignore: unused_element
-  Future<void> _handleCalendarSyncToggle(bool enabled) async {
+  Future<void> _handleGoogleSignIn() async {
     if (_isAuthBusy) return;
     HapticFeedback.selectionClick();
 
-    if (widget.onGoogleCalendarSyncChanged != null) {
-      widget.onGoogleCalendarSyncChanged!(enabled);
+    setState(() => _isAuthBusy = true);
+    try {
+      final email = await GoogleSyncService.instance.signIn();
+      if (email == null) {
+        if (!mounted) return;
+        final errorMsg =
+            GoogleSyncService.instance.lastAuthError ?? '구글 로그인에 실패했습니다.';
+        ScaffoldMessenger.of(context).clearSnackBars();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(errorMsg),
+            backgroundColor: Colors.redAccent,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return;
+      }
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(SettingsScreen.prefKeyGoogleEmail, email);
+      SettingsScreen.googleEmailNotifier.value = email;
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).clearSnackBars();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Google 계정($email)으로 로그인되었습니다. 원하는 연동 기능을 켜 주세요.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isAuthBusy = false);
     }
+  }
+
+  Future<void> _handleGoogleSignOut() async {
+    if (_isAuthBusy) return;
+    HapticFeedback.selectionClick();
+
+    setState(() => _isAuthBusy = true);
+    try {
+      await GoogleSyncService.instance.signOut();
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(SettingsScreen.prefKeyGoogleCalSync, false);
+      await prefs.setBool(SettingsScreen.prefKeyGoogleTaskSync, false);
+      await prefs.setBool(SettingsScreen.prefKeyGoogleDriveSync, false);
+      await prefs.remove(SettingsScreen.prefKeyGoogleEmail);
+
+      SettingsScreen.googleCalendarSyncNotifier.value = false;
+      SettingsScreen.googleTasksSyncNotifier.value = false;
+      SettingsScreen.googleDriveSyncNotifier.value = false;
+      SettingsScreen.googleEmailNotifier.value = null;
+
+      widget.onGoogleCalendarSyncChanged?.call(false);
+      widget.onGoogleTasksSyncChanged?.call(false);
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).clearSnackBars();
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Google 계정에서 로그아웃되었습니다. (로컬 데이터 유지)'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _isAuthBusy = false);
+    }
+  }
+
+  Future<void> _handleCalendarSyncToggle(bool enabled) async {
+    if (_isAuthBusy) return;
+    HapticFeedback.selectionClick();
 
     setState(() => _isAuthBusy = true);
     try {
       final prefs = await SharedPreferences.getInstance();
       if (enabled) {
-        final email =
-            await GoogleSyncService.instance.signIn(allowMockFallback: true);
-        if (email == null) {
-          setState(() => _isAuthBusy = false);
+        final scopeOk = await GoogleSyncService.instance
+            .ensureScope(GoogleSyncService.calendarScope);
+        if (!scopeOk) {
+          SettingsScreen.googleCalendarSyncNotifier.value = false;
+          await prefs.setBool(SettingsScreen.prefKeyGoogleCalSync, false);
+          if (!mounted) return;
+          final err = GoogleSyncService.instance.lastAuthError ??
+              '캘린더 접근 권한이 허용되지 않아 연동이 취소되었습니다.';
+          ScaffoldMessenger.of(context).clearSnackBars();
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(err),
+              backgroundColor: Colors.redAccent,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
           return;
         }
+
         SettingsScreen.googleCalendarSyncNotifier.value = true;
-        SettingsScreen.googleEmailNotifier.value = email;
         await prefs.setBool(SettingsScreen.prefKeyGoogleCalSync, true);
-        await prefs.setString(SettingsScreen.prefKeyGoogleEmail, email);
+        widget.onGoogleCalendarSyncChanged?.call(true);
 
         if (!mounted) return;
         ScaffoldMessenger.of(context).clearSnackBars();
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Google 캘린더 연동이 활성화되었습니다 ($email).'),
+          const SnackBar(
+            content: Text('Google 캘린더 연동이 활성화되었습니다.'),
             behavior: SnackBarBehavior.floating,
           ),
         );
       } else {
-        // 연동 해제 시 로컬 데이터는 삭제하지 않고 그대로 유지
+        GoogleSyncService.instance.removeScope(GoogleSyncService.calendarScope);
         SettingsScreen.googleCalendarSyncNotifier.value = false;
         await prefs.setBool(SettingsScreen.prefKeyGoogleCalSync, false);
-
-        if (!SettingsScreen.googleTasksSyncNotifier.value) {
-          await GoogleSyncService.instance.signOut();
-          SettingsScreen.googleEmailNotifier.value = null;
-          await prefs.remove(SettingsScreen.prefKeyGoogleEmail);
-        }
+        widget.onGoogleCalendarSyncChanged?.call(false);
 
         if (!mounted) return;
         ScaffoldMessenger.of(context).clearSnackBars();
@@ -227,48 +322,50 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  // ignore: unused_element
   Future<void> _handleTasksSyncToggle(bool enabled) async {
     if (_isAuthBusy) return;
     HapticFeedback.selectionClick();
-
-    if (widget.onGoogleTasksSyncChanged != null) {
-      widget.onGoogleTasksSyncChanged!(enabled);
-    }
 
     setState(() => _isAuthBusy = true);
     try {
       final prefs = await SharedPreferences.getInstance();
       if (enabled) {
-        final email =
-            await GoogleSyncService.instance.signIn(allowMockFallback: true);
-        if (email == null) {
-          setState(() => _isAuthBusy = false);
+        final scopeOk = await GoogleSyncService.instance
+            .ensureScope(GoogleSyncService.tasksScope);
+        if (!scopeOk) {
+          SettingsScreen.googleTasksSyncNotifier.value = false;
+          await prefs.setBool(SettingsScreen.prefKeyGoogleTaskSync, false);
+          if (!mounted) return;
+          final err = GoogleSyncService.instance.lastAuthError ??
+              '태스크 접근 권한이 허용되지 않아 연동이 취소되었습니다.';
+          ScaffoldMessenger.of(context).clearSnackBars();
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(err),
+              backgroundColor: Colors.redAccent,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
           return;
         }
+
         SettingsScreen.googleTasksSyncNotifier.value = true;
-        SettingsScreen.googleEmailNotifier.value = email;
         await prefs.setBool(SettingsScreen.prefKeyGoogleTaskSync, true);
-        await prefs.setString(SettingsScreen.prefKeyGoogleEmail, email);
+        widget.onGoogleTasksSyncChanged?.call(true);
 
         if (!mounted) return;
         ScaffoldMessenger.of(context).clearSnackBars();
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Google 태스크 연동이 활성화되었습니다 ($email).'),
+          const SnackBar(
+            content: Text('Google 태스크 연동이 활성화되었습니다.'),
             behavior: SnackBarBehavior.floating,
           ),
         );
       } else {
-        // 연동 해제 시 로컬 할 일 데이터는 삭제하지 않고 그대로 유지
+        GoogleSyncService.instance.removeScope(GoogleSyncService.tasksScope);
         SettingsScreen.googleTasksSyncNotifier.value = false;
         await prefs.setBool(SettingsScreen.prefKeyGoogleTaskSync, false);
-
-        if (!SettingsScreen.googleCalendarSyncNotifier.value) {
-          await GoogleSyncService.instance.signOut();
-          SettingsScreen.googleEmailNotifier.value = null;
-          await prefs.remove(SettingsScreen.prefKeyGoogleEmail);
-        }
+        widget.onGoogleTasksSyncChanged?.call(false);
 
         if (!mounted) return;
         ScaffoldMessenger.of(context).clearSnackBars();
@@ -278,6 +375,252 @@ class _SettingsScreenState extends State<SettingsScreen> {
             behavior: SnackBarBehavior.floating,
           ),
         );
+      }
+    } finally {
+      if (mounted) setState(() => _isAuthBusy = false);
+    }
+  }
+
+  Future<void> _handleDriveBackupToggle(bool enabled) async {
+    if (_isAuthBusy) return;
+    HapticFeedback.selectionClick();
+
+    setState(() => _isAuthBusy = true);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (enabled) {
+        final scopeOk = await GoogleSyncService.instance
+            .ensureScope(GoogleSyncService.driveAppDataScope);
+        if (!scopeOk) {
+          SettingsScreen.googleDriveSyncNotifier.value = false;
+          await prefs.setBool(SettingsScreen.prefKeyGoogleDriveSync, false);
+          if (!mounted) return;
+          final err = GoogleSyncService.instance.lastAuthError ??
+              '드라이브 앱데이터 접근 권한이 허용되지 않아 백업 활성화가 취소되었습니다.';
+          ScaffoldMessenger.of(context).clearSnackBars();
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(err),
+              backgroundColor: Colors.redAccent,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+          return;
+        }
+
+        SettingsScreen.googleDriveSyncNotifier.value = true;
+        await prefs.setBool(SettingsScreen.prefKeyGoogleDriveSync, true);
+
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).clearSnackBars();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Google 드라이브 자동 백업이 활성화되었습니다.'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      } else {
+        GoogleSyncService.instance
+            .removeScope(GoogleSyncService.driveAppDataScope);
+        SettingsScreen.googleDriveSyncNotifier.value = false;
+        await prefs.setBool(SettingsScreen.prefKeyGoogleDriveSync, false);
+
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).clearSnackBars();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Google 드라이브 자동 백업이 비활성화되었습니다.'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isAuthBusy = false);
+    }
+  }
+
+  Future<void> _handleManualDriveBackup() async {
+    if (_isAuthBusy) return;
+    HapticFeedback.selectionClick();
+    setState(() => _isAuthBusy = true);
+
+    try {
+      final scopeOk = await GoogleSyncService.instance
+          .ensureScope(GoogleSyncService.driveAppDataScope);
+      if (!scopeOk) {
+        if (!mounted) return;
+        final err = GoogleSyncService.instance.lastAuthError ??
+            '드라이브 접근 권한이 허용되지 않았습니다.';
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(err),
+            backgroundColor: Colors.redAccent,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return;
+      }
+
+      final backupJson = widget.onExportBackup != null
+          ? await (widget.onExportBackup!() as Future<String>)
+          : null;
+
+      if (backupJson == null || backupJson.isEmpty) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('백업할 데이터가 없습니다.')),
+        );
+        return;
+      }
+
+      final fileId = await GoogleSyncService.instance.backupJsonToDrive(
+        jsonContent: backupJson,
+      );
+
+      if (!mounted) return;
+      if (fileId != null) {
+        ScaffoldMessenger.of(context).clearSnackBars();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('🎉 Google 드라이브(앱데이터)에 안전하게 백업되었습니다.'),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('드라이브 백업 중 오류가 발생했습니다. 네트워크 및 권한을 확인해 주세요.'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isAuthBusy = false);
+    }
+  }
+
+  Future<void> _handleRestoreFromDriveDialog() async {
+    if (_isAuthBusy) return;
+    HapticFeedback.selectionClick();
+    setState(() => _isAuthBusy = true);
+
+    List<DriveBackupInfo> backups = [];
+    try {
+      final scopeOk = await GoogleSyncService.instance
+          .ensureScope(GoogleSyncService.driveAppDataScope);
+      if (!scopeOk) {
+        if (!mounted) return;
+        final err = GoogleSyncService.instance.lastAuthError ??
+            '드라이브 접근 권한이 허용되지 않았습니다.';
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(err),
+            backgroundColor: Colors.redAccent,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+        return;
+      }
+      backups = await GoogleSyncService.instance.listDriveBackups();
+    } finally {
+      if (mounted) setState(() => _isAuthBusy = false);
+    }
+
+    if (!mounted) return;
+    if (backups.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Google 드라이브에 저장된 백업 파일이 없습니다.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    showDialog<void>(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.cloud_download_outlined),
+            SizedBox(width: 8),
+            Text('드라이브 백업 복원'),
+          ],
+        ),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('복원할 백업 버전을 선택해 주세요 (최대 5개 보관):'),
+              const SizedBox(height: 12),
+              Flexible(
+                child: ListView.separated(
+                  shrinkWrap: true,
+                  itemCount: backups.length,
+                  separatorBuilder: (_, _) => const Divider(height: 1),
+                  itemBuilder: (ctx, i) {
+                    final item = backups[i];
+                    return ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: const Icon(Icons.history),
+                      title: Text(item.formattedDate,
+                          style: const TextStyle(fontWeight: FontWeight.bold)),
+                      subtitle: Text(
+                          '${item.fileName} (${(item.sizeBytes / 1024).toStringAsFixed(1)} KB)'),
+                      onTap: () async {
+                        Navigator.pop(dialogCtx);
+                        await _performRestoreFromDrive(item.id);
+                      },
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogCtx),
+            child: const Text('취소'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _performRestoreFromDrive(String fileId) async {
+    setState(() => _isAuthBusy = true);
+    try {
+      final jsonStr = await GoogleSyncService.instance.downloadDriveBackupJson(fileId);
+      if (jsonStr == null || jsonStr.isEmpty) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('백업 데이터를 다운로드하지 못했습니다.')),
+        );
+        return;
+      }
+
+      if (widget.onImportBackup != null) {
+        final success = await widget.onImportBackup!(jsonStr);
+        if (!mounted) return;
+        if (success == true) {
+          ScaffoldMessenger.of(context).clearSnackBars();
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('🎉 Google 드라이브 백업에서 성공적으로 복원되었습니다.'),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('백업 파일 형식이 올바르지 않습니다.'),
+              backgroundColor: Colors.redAccent,
+            ),
+          );
+        }
       }
     } finally {
       if (mounted) setState(() => _isAuthBusy = false);
@@ -483,8 +826,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 return ListView(
                   padding: const EdgeInsets.all(16),
                   children: [
-                    /*
-                    // --- 1. 구글 캘린더 / 구글 태스크 개별 연동 카드 ---
+                                        // --- 1. 외부 계정 연동 및 클라우드 백업 카드 ---
                     Card(
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(16),
@@ -493,7 +835,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Padding(
-                            padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+                            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
                             child: Row(
                               children: [
                                 Icon(
@@ -504,7 +846,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 const SizedBox(width: 8),
                                 const Expanded(
                                   child: Text(
-                                    '외부 계정 연동 (Google 양방향 동기화)',
+                                    'Google 연동 및 클라우드 백업',
                                     style: TextStyle(
                                       fontSize: 16,
                                       fontWeight: FontWeight.bold,
@@ -516,59 +858,173 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                     width: 16,
                                     height: 16,
                                     child: CircularProgressIndicator(
-                                        strokeWidth: 2),
+                                      strokeWidth: 2,
+                                    ),
                                   ),
                               ],
                             ),
                           ),
-                          if (connectedEmail != null &&
-                              (calSynced || taskSynced))
-                            Padding(
-                              padding:
-                                  const EdgeInsets.symmetric(horizontal: 16),
-                              child: Chip(
-                                avatar: const Icon(Icons.account_circle,
-                                    size: 18),
-                                label: Text(
-                                  '연결됨: $connectedEmail',
-                                  style: const TextStyle(fontSize: 12),
+                          if (connectedEmail == null) ...[
+                            const Padding(
+                              padding: EdgeInsets.symmetric(horizontal: 16),
+                              child: Text(
+                                'Google 계정으로 로그인하면 캘린더·태스크 양방향 동기화 및 드라이브 자동 백업 기능을 사용할 수 있습니다.',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  color: Colors.grey,
                                 ),
                               ),
                             ),
-                          SwitchListTile(
-                            secondary:
-                                const Icon(Icons.calendar_month_outlined),
-                            title: const Text(
-                              'Google 캘린더 연동',
-                              style: TextStyle(fontWeight: FontWeight.bold),
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+                              child: SizedBox(
+                                width: double.infinity,
+                                child: FilledButton.icon(
+                                  icon: const Icon(Icons.login_rounded, size: 18),
+                                  label: const Text(
+                                    'Google 계정으로 로그인',
+                                    style: TextStyle(fontWeight: FontWeight.bold),
+                                  ),
+                                  onPressed:
+                                      _isAuthBusy ? null : _handleGoogleSignIn,
+                                ),
+                              ),
                             ),
-                            subtitle: const Text(
-                              '일정·반복(RRULE)·상황/태그 메타데이터를 양방향 동기화하며, 활성화 시 캘린더 화면 상단에 동기화 버튼이 표시됩니다.',
+                          ] else ...[
+                            Padding(
+                              padding:
+                                  const EdgeInsets.fromLTRB(16, 0, 12, 8),
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    child: Align(
+                                      alignment: Alignment.centerLeft,
+                                      child: Chip(
+                                        avatar: const Icon(
+                                          Icons.account_circle,
+                                          size: 18,
+                                        ),
+                                        label: Text(
+                                          connectedEmail,
+                                          style: const TextStyle(fontSize: 12),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  TextButton.icon(
+                                    onPressed: _isAuthBusy
+                                        ? null
+                                        : _handleGoogleSignOut,
+                                    icon: const Icon(
+                                      Icons.logout_rounded,
+                                      size: 16,
+                                      color: Colors.redAccent,
+                                    ),
+                                    label: const Text(
+                                      '로그아웃',
+                                      style: TextStyle(
+                                        color: Colors.redAccent,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
                             ),
-                            value: calSynced,
-                            onChanged:
-                                _isAuthBusy ? null : _handleCalendarSyncToggle,
-                          ),
-                          const Divider(height: 1),
-                          SwitchListTile(
-                            secondary: const Icon(Icons.task_alt_outlined),
-                            title: const Text(
-                              'Google 태스크 연동',
-                              style: TextStyle(fontWeight: FontWeight.bold),
+                            const Divider(height: 1),
+                            SwitchListTile(
+                              secondary:
+                                  const Icon(Icons.calendar_month_outlined),
+                              title: const Text(
+                                'Google 캘린더 연동',
+                                style: TextStyle(fontWeight: FontWeight.bold),
+                              ),
+                              subtitle: const Text(
+                                '일정·반복(RRULE)·상황/태그 메타데이터를 양방향 동기화하며, 활성화 시 캘린더 화면 상단에 동기화 버튼이 표시됩니다.',
+                              ),
+                              value: calSynced,
+                              onChanged: _isAuthBusy
+                                  ? null
+                                  : _handleCalendarSyncToggle,
                             ),
-                            subtitle: const Text(
-                              '기본 할 일 목록(@default)과 시간·세부항목(Notes)을 양방향 동기화하며, 활성화 시 할 일 화면 상단에 동기화 버튼이 표시됩니다.',
+                            const Divider(height: 1),
+                            SwitchListTile(
+                              secondary: const Icon(Icons.task_alt_outlined),
+                              title: const Text(
+                                'Google 태스크 연동',
+                                style: TextStyle(fontWeight: FontWeight.bold),
+                              ),
+                              subtitle: const Text(
+                                '기본 할 일 목록(@default)과 시간·세부항목(Notes)을 양방향 동기화하며, 활성화 시 할 일 화면 상단에 동기화 버튼이 표시됩니다.',
+                              ),
+                              value: taskSynced,
+                              onChanged:
+                                  _isAuthBusy ? null : _handleTasksSyncToggle,
                             ),
-                            value: taskSynced,
-                            onChanged:
-                                _isAuthBusy ? null : _handleTasksSyncToggle,
-                          ),
+                            const Divider(height: 1),
+                            ValueListenableBuilder<bool>(
+                              valueListenable:
+                                  SettingsScreen.googleDriveSyncNotifier,
+                              builder: (ctx, driveSynced, _) => Column(
+                                children: [
+                                  SwitchListTile(
+                                    secondary: const Icon(
+                                        Icons.add_to_drive_outlined),
+                                    title: const Text(
+                                      'Google 드라이브 자동 백업',
+                                      style: TextStyle(
+                                          fontWeight: FontWeight.bold),
+                                    ),
+                                    subtitle: const Text(
+                                      '드라이브 숨김 앱폴더에 매일 1회 안전하게 백업합니다 (최신 5개 버전 보관).',
+                                    ),
+                                    value: driveSynced,
+                                    onChanged: _isAuthBusy
+                                        ? null
+                                        : _handleDriveBackupToggle,
+                                  ),
+                                  if (driveSynced)
+                                    Padding(
+                                      padding: const EdgeInsets.fromLTRB(
+                                          16, 4, 16, 12),
+                                      child: Row(
+                                        children: [
+                                          Expanded(
+                                            child: OutlinedButton.icon(
+                                              icon: const Icon(
+                                                  Icons.cloud_upload_outlined,
+                                                  size: 18),
+                                              label:
+                                                  const Text('지금 드라이브에 백업'),
+                                              onPressed: _isAuthBusy
+                                                  ? null
+                                                  : _handleManualDriveBackup,
+                                            ),
+                                          ),
+                                          const SizedBox(width: 8),
+                                          Expanded(
+                                            child: OutlinedButton.icon(
+                                              icon: const Icon(
+                                                  Icons.history_outlined,
+                                                  size: 18),
+                                              label: const Text('드라이브에서 복원'),
+                                              onPressed: _isAuthBusy
+                                                  ? null
+                                                  : _handleRestoreFromDriveDialog,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                          ],
                         ],
                       ),
                     ),
 
                     const SizedBox(height: 12),
-                    */
 
                     // --- 2. 화면 모드 카드 ---
                     Card(

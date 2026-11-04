@@ -523,4 +523,69 @@ class StorageService {
       await prefs.remove(_keyLastDailyResetKey);
     } catch (_) {}
   }
+
+  // --- 12. 구글 드라이브 주기적 백업 지원 ---
+  static const String keyGoogleDriveBackupEnabled = 'bygo_google_drive_backup_enabled';
+  static const String keyLastGoogleDriveBackupTime = 'bygo_last_google_drive_backup_time';
+
+  Future<bool> loadGoogleDriveBackupEnabled() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      return prefs.getBool(keyGoogleDriveBackupEnabled) ?? false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> saveGoogleDriveBackupEnabled(bool enabled) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(keyGoogleDriveBackupEnabled, enabled);
+    } catch (_) {}
+  }
+
+  Future<DateTime?> loadLastGoogleDriveBackupTime() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final str = prefs.getString(keyLastGoogleDriveBackupTime);
+      return str != null ? DateTime.tryParse(str) : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> saveLastGoogleDriveBackupTime(DateTime time) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(keyLastGoogleDriveBackupTime, time.toIso8601String());
+    } catch (_) {}
+  }
+
+  /// 전체 데이터를 백업용 JSON 문자열로 빌드
+  Future<String> buildBackupJsonString() async {
+    final schedules = await loadSchedules();
+    final situations = await loadSituations();
+    final todos = await loadTodos();
+    final themeMode = await loadThemeMode();
+    final seedColor = await loadSeedColor();
+    final showTips = await loadShowTips();
+    final autoResetOnScheduleTime = await loadAutoResetOnScheduleTime();
+    final autoResetDaily = await loadAutoResetDaily();
+    final dailyResetTime = await loadDailyResetTime();
+
+    final data = {
+      'version': 1,
+      'exportedAt': DateTime.now().toIso8601String(),
+      'schedules': schedules.map((s) => s.toJson()).toList(),
+      'situations': situations.map((s) => s.toJson()).toList(),
+      'todos': todos.map((t) => t.toJson()).toList(),
+      'themeMode': themeMode.name,
+      'seedColor': seedColor,
+      'showTips': showTips,
+      'autoResetOnScheduleTime': autoResetOnScheduleTime,
+      'autoResetDaily': autoResetDaily,
+      'dailyResetTime': dailyResetTime,
+    };
+    return jsonEncode(data);
+  }
 }

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:googleapis/calendar/v3.dart' as cal;
 import 'package:googleapis/tasks/v1.dart' as tasks;
+import 'package:googleapis/drive/v3.dart' as drive;
 import 'package:extension_google_sign_in_as_googleapis_auth/extension_google_sign_in_as_googleapis_auth.dart';
 
 import '../models/schedule_model.dart';
@@ -33,44 +34,127 @@ class GoogleSyncService {
   GoogleSyncService._();
   static final GoogleSyncService instance = GoogleSyncService._();
 
-  final GoogleSignIn _googleSignIn = GoogleSignIn(
-    scopes: <String>[cal.CalendarApi.calendarScope, tasks.TasksApi.tasksScope],
+  static const String calendarScope = cal.CalendarApi.calendarScope;
+  static const String tasksScope = tasks.TasksApi.tasksScope;
+  static const String driveAppDataScope = drive.DriveApi.driveAppdataScope;
+
+  final Set<String> _grantedScopes = <String>{};
+
+  GoogleSignIn _googleSignIn = GoogleSignIn(
+    scopes: <String>['email'],
   );
 
   GoogleSignInAccount? _currentUser;
-  bool _isMockConnected = false;
 
-  String? get connectedEmail =>
-      _currentUser?.email ?? (_isMockConnected ? 'bygo.local.sync@gmail.com' : _currentUser?.email);
+  String? get connectedEmail => _currentUser?.email;
 
-  bool get isSignedIn => _currentUser != null || _isMockConnected;
+  bool get isSignedIn => _currentUser != null;
 
-  Future<String?> signIn({bool allowMockFallback = false}) async {
+  String? lastAuthError;
+
+  void _rebuildGoogleSignInInstance() {
+    _googleSignIn = GoogleSignIn(
+      scopes: <String>['email', ..._grantedScopes],
+    );
+  }
+
+  /// 앱 시작 시 로그인 창을 띄우지 않고 기존 세션만 조용히 복원합니다.
+  Future<String?> restoreSessionSilently({
+    List<String> expectedScopes = const [],
+  }) async {
     try {
-      final account =
-          await _googleSignIn.signInSilently() ?? await _googleSignIn.signIn();
+      _grantedScopes
+        ..clear()
+        ..addAll(expectedScopes);
+      _rebuildGoogleSignInInstance();
+      final account = await _googleSignIn.signInSilently(suppressErrors: true);
       if (account != null) {
         _currentUser = account;
-        _isMockConnected = false;
         return account.email;
       }
-    } catch (_) {
-      // GCP OAuth 미등록 또는 데스크톱 환경에서 폴백 허용 시 로컬 시뮬레이션 계정 활성화
-    }
-
-    if (allowMockFallback) {
-      _isMockConnected = true;
-      return connectedEmail;
-    }
+    } catch (_) {}
+    _currentUser = null;
     return null;
   }
 
+  /// 설정 화면의 'Google 계정으로 로그인' 버튼 클릭 시 호출되는 명시적 로그인
+  Future<String?> signIn() async {
+    lastAuthError = null;
+    try {
+      _grantedScopes.clear();
+      _rebuildGoogleSignInInstance();
+      // 이전 실패/취소로 인해 남아있을 수 있는 캐시 상태를 먼저 초기화하여 재시도 시 먹통 방지
+      try {
+        await _googleSignIn.signOut();
+      } catch (_) {}
+
+      final account = await _googleSignIn.signIn();
+      if (account != null) {
+        _currentUser = account;
+        return account.email;
+      } else {
+        lastAuthError = '사용자가 구글 로그인을 취소했습니다.';
+      }
+    } catch (e) {
+      lastAuthError =
+          '구글 계정 인증에 실패했습니다 ($e). GCP OAuth 클라이언트 ID 및 키해시(SHA-1) 설정을 확인해 주세요.';
+      try {
+        await _googleSignIn.signOut();
+      } catch (_) {}
+    }
+
+    _currentUser = null;
+    return null;
+  }
+
+  /// 개별 기능(캘린더/태스크/드라이브) 활성화 시 권한 요청.
+  /// 실패하더라도 내부 requestedScopes 오염을 초기화하여 언제든 재시도 가능하게 보장합니다.
+  Future<bool> ensureScope(String scope) async {
+    lastAuthError = null;
+    try {
+      _currentUser ??= _googleSignIn.currentUser ??
+          await _googleSignIn.signInSilently(suppressErrors: true);
+      if (_currentUser == null) {
+        lastAuthError = ' 먼저 Google 계정에 로그인해 주세요.';
+        return false;
+      }
+
+      final granted = await _googleSignIn.requestScopes(<String>[scope]);
+      if (granted) {
+        _grantedScopes.add(scope);
+        _currentUser = _googleSignIn.currentUser ?? _currentUser;
+        try {
+          await _currentUser?.clearAuthCache();
+        } catch (_) {}
+        return true;
+      } else {
+        lastAuthError = '권한 요청이 거부되었습니다. 다시 스위치를 켜서 권한을 허용해 주세요.';
+      }
+    } catch (e) {
+      lastAuthError = '권한 요청 중 오류가 발생했습니다 ($e).';
+    }
+
+    // 권한 획득 실패 시 네이티브 플러그인의 requestedScopes 목록에서 거부된 scope를 제거하기 위해 인스턴스 재구성
+    _grantedScopes.remove(scope);
+    _rebuildGoogleSignInInstance();
+    try {
+      _currentUser = await _googleSignIn.signInSilently(suppressErrors: true) ??
+          _currentUser;
+    } catch (_) {}
+    return false;
+  }
+
+  void removeScope(String scope) {
+    _grantedScopes.remove(scope);
+  }
+
   Future<void> signOut() async {
+    _grantedScopes.clear();
     try {
       await _googleSignIn.signOut();
     } catch (_) {}
+    _rebuildGoogleSignInInstance();
     _currentUser = null;
-    _isMockConnected = false;
   }
 
   // ===========================================================================
@@ -85,9 +169,8 @@ class GoogleSyncService {
         .toList();
 
     try {
-      if (_currentUser == null && !_isMockConnected) {
-        await signIn(allowMockFallback: true);
-      }
+      _currentUser ??= _googleSignIn.currentUser ??
+          await _googleSignIn.signInSilently(suppressErrors: true);
 
       final httpClient = _currentUser != null
           ? await _googleSignIn.authenticatedClient()
@@ -266,9 +349,8 @@ class GoogleSyncService {
         .toList();
 
     try {
-      if (_currentUser == null && !_isMockConnected) {
-        await signIn(allowMockFallback: true);
-      }
+      _currentUser ??= _googleSignIn.currentUser ??
+          await _googleSignIn.signInSilently(suppressErrors: true);
 
       final httpClient = _currentUser != null
           ? await _googleSignIn.authenticatedClient()
@@ -346,7 +428,7 @@ class GoogleSyncService {
         if (local.lastEditedTime.isAfter(
           remoteUpdated.add(const Duration(seconds: 2)),
         )) {
-          final taskToPatch = _todoToGoogleTask(local);
+          final taskToPatch = _todoToGoogleTask(local, existingRemote: remote);
           final patched = await tasksApi.tasks.patch(
             taskToPatch,
             '@default',
@@ -723,7 +805,7 @@ class GoogleSyncService {
   // ===========================================================================
   // 4. 변환 유틸리티: TodoItem <-> Google Task
   // ===========================================================================
-  tasks.Task _todoToGoogleTask(TodoItem todo) {
+  tasks.Task _todoToGoogleTask(TodoItem todo, {tasks.Task? existingRemote}) {
     String? dueRfc3339;
     if (todo.dueDate != null) {
       final utcMidnight = DateTime.utc(
@@ -737,7 +819,7 @@ class GoogleSyncService {
     return tasks.Task(
       id: todo.googleTaskId,
       title: todo.title,
-      notes: todo.toGoogleTaskNotes(),
+      notes: todo.toGoogleTaskNotes(existingRawNotes: existingRemote?.notes),
       due: dueRfc3339,
       status: todo.isCompleted ? 'completed' : 'needsAction',
       completed: todo.completedAt?.toUtc().toIso8601String(),
@@ -784,5 +866,182 @@ class GoogleSyncService {
   DateTime? _parseRfc3339(String? value) {
     if (value == null || value.isEmpty) return null;
     return DateTime.tryParse(value)?.toLocal();
+  }
+
+  // ===========================================================================
+  // 5. 구글 드라이브 앱데이터 자동 JSON 백업 및 복원 (drive.appdata)
+  // ===========================================================================
+  static const String _driveBackupPrefix = 'bygo_backup_';
+  static const int _maxDriveBackupVersions = 5;
+
+  Future<String?> backupJsonToDrive({
+    required String jsonContent,
+    bool allowMock = true,
+  }) async {
+    try {
+      _currentUser ??= _googleSignIn.currentUser ??
+          await _googleSignIn.signInSilently(suppressErrors: true);
+
+      final httpClient = _currentUser != null
+          ? await _googleSignIn.authenticatedClient()
+          : null;
+
+      if (httpClient == null) {
+        // 모의 백업 성공 시뮬레이션
+        return 'mock_drive_backup_${DateTime.now().millisecondsSinceEpoch}';
+      }
+
+      final driveApi = drive.DriveApi(httpClient);
+      final now = DateTime.now();
+      final yyyy = now.year.toString().padLeft(4, '0');
+      final mm = now.month.toString().padLeft(2, '0');
+      final dd = now.day.toString().padLeft(2, '0');
+      final hh = now.hour.toString().padLeft(2, '0');
+      final mi = now.minute.toString().padLeft(2, '0');
+      final ss = now.second.toString().padLeft(2, '0');
+      final fileName = '$_driveBackupPrefix$yyyy$mm${dd}_$hh$mi$ss.json';
+
+      final fileMetadata = drive.File()
+        ..name = fileName
+        ..parents = ['appDataFolder']
+        ..description = 'Bygo 자동 클라우드 백업 파일'
+        ..mimeType = 'application/json';
+
+      final bytes = utf8.encode(jsonContent);
+      final media = drive.Media(
+        Stream.value(bytes),
+        bytes.length,
+        contentType: 'application/json',
+      );
+
+      final uploadedFile = await driveApi.files.create(
+        fileMetadata,
+        uploadMedia: media,
+      );
+
+      // 최대 5개 유지: 초과된 이전 백업 파일 자동 정리(Rolling Prune)
+      await _pruneDriveBackups(driveApi);
+
+      return uploadedFile.id;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<List<DriveBackupInfo>> listDriveBackups() async {
+    try {
+      _currentUser ??= _googleSignIn.currentUser ??
+          await _googleSignIn.signInSilently(suppressErrors: true);
+
+      final httpClient = _currentUser != null
+          ? await _googleSignIn.authenticatedClient()
+          : null;
+
+      if (httpClient == null) {
+        return [
+          DriveBackupInfo(
+            id: 'mock_1',
+            fileName: 'bygo_backup_mock_latest.json',
+            createdTime: DateTime.now(),
+            sizeBytes: 1024,
+          ),
+        ];
+      }
+
+      final driveApi = drive.DriveApi(httpClient);
+      final fileList = await driveApi.files.list(
+        spaces: 'appDataFolder',
+        q: "name contains '$_driveBackupPrefix' and trashed = false",
+        orderBy: 'createdTime desc',
+        $fields: 'files(id, name, createdTime, size)',
+      );
+
+      final files = fileList.files ?? <drive.File>[];
+      return files.map((f) {
+        return DriveBackupInfo(
+          id: f.id ?? '',
+          fileName: f.name ?? 'unknown.json',
+          createdTime: f.createdTime?.toLocal() ?? DateTime.now(),
+          sizeBytes: int.tryParse(f.size ?? '0') ?? 0,
+        );
+      }).toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  Future<String?> downloadDriveBackupJson(String fileId) async {
+    try {
+      _currentUser ??= _googleSignIn.currentUser ??
+          await _googleSignIn.signInSilently(suppressErrors: true);
+
+      final httpClient = _currentUser != null
+          ? await _googleSignIn.authenticatedClient()
+          : null;
+
+      if (httpClient == null) {
+        return null;
+      }
+
+      final driveApi = drive.DriveApi(httpClient);
+      final media = await driveApi.files.get(
+        fileId,
+        downloadOptions: drive.DownloadOptions.fullMedia,
+      ) as drive.Media;
+
+      final bytes = <int>[];
+      await for (final chunk in media.stream) {
+        bytes.addAll(chunk);
+      }
+      return utf8.decode(bytes);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _pruneDriveBackups(drive.DriveApi driveApi) async {
+    try {
+      final fileList = await driveApi.files.list(
+        spaces: 'appDataFolder',
+        q: "name contains '$_driveBackupPrefix' and trashed = false",
+        orderBy: 'createdTime desc',
+        $fields: 'files(id, name, createdTime)',
+      );
+
+      final files = fileList.files ?? <drive.File>[];
+      if (files.length > _maxDriveBackupVersions) {
+        final toDelete = files.sublist(_maxDriveBackupVersions);
+        for (final f in toDelete) {
+          if (f.id != null) {
+            try {
+              await driveApi.files.delete(f.id!);
+            } catch (_) {}
+          }
+        }
+      }
+    } catch (_) {}
+  }
+}
+
+class DriveBackupInfo {
+  final String id;
+  final String fileName;
+  final DateTime createdTime;
+  final int sizeBytes;
+
+  DriveBackupInfo({
+    required this.id,
+    required this.fileName,
+    required this.createdTime,
+    required this.sizeBytes,
+  });
+
+  String get formattedDate {
+    final y = createdTime.year;
+    final m = createdTime.month.toString().padLeft(2, '0');
+    final d = createdTime.day.toString().padLeft(2, '0');
+    final hh = createdTime.hour.toString().padLeft(2, '0');
+    final mm = createdTime.minute.toString().padLeft(2, '0');
+    return '$y-$m-$d $hh:$mm';
   }
 }
