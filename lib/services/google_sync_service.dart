@@ -7,6 +7,7 @@ import 'package:googleapis/calendar/v3.dart' as cal;
 import 'package:googleapis/tasks/v1.dart' as tasks;
 import 'package:googleapis/drive/v3.dart' as drive;
 import 'package:extension_google_sign_in_as_googleapis_auth/extension_google_sign_in_as_googleapis_auth.dart';
+import 'package:flutter_timezone/flutter_timezone.dart';
 
 import '../models/schedule_model.dart';
 import '../models/situation_model.dart';
@@ -33,6 +34,25 @@ class SyncResult<T> {
 class GoogleSyncService {
   GoogleSyncService._();
   static final GoogleSyncService instance = GoogleSyncService._();
+
+  static String? _cachedLocalTimeZone;
+
+  static Future<String> _getLocalTimeZone() async {
+    if (_cachedLocalTimeZone != null && _cachedLocalTimeZone!.isNotEmpty) {
+      return _cachedLocalTimeZone!;
+    }
+    try {
+      final tz = await FlutterTimezone.getLocalTimezone();
+      if (tz.isNotEmpty) {
+        _cachedLocalTimeZone = tz;
+        return tz;
+      }
+    } catch (e) {
+      debugPrint('[GoogleSyncService] getLocalTimezone error: $e');
+    }
+    _cachedLocalTimeZone = 'Asia/Seoul';
+    return _cachedLocalTimeZone!;
+  }
 
   /// 사용자 화면에 출력할 간결하고 정돈된 동기화 안내 문구를 반환합니다. (상세 시스템/API 오류 내용은 노출하지 않음)
   static String formatSyncError(dynamic error, {required String featureName}) {
@@ -203,6 +223,7 @@ class GoogleSyncService {
       }
 
       final calendarApi = cal.CalendarApi(httpClient);
+      final localTimeZone = await _getLocalTimeZone();
       final now = DateTime.now();
       final timeMin = DateTime(now.year - 1, 1, 1).toUtc();
       final timeMax = DateTime(now.year + 2, 12, 31, 23, 59, 59).toUtc();
@@ -251,18 +272,27 @@ class GoogleSyncService {
             local.googleEventId!.startsWith('gcal_');
 
         if (isNotUploadedYet) {
-          final eventToInsert = _scheduleToGoogleEvent(local, situations);
-          final created = await calendarApi.events.insert(
-            eventToInsert,
-            'primary',
-          );
-          final updatedLocal = local.copyWith(
-            googleEventId: created.id,
-            lastEditedTime: created.updated?.toLocal() ?? DateTime.now(),
-          );
-          if (created.id != null) processedGoogleIds.add(created.id!);
-          survivors.add(updatedLocal);
-          uploaded++;
+          try {
+            final eventToInsert = _scheduleToGoogleEvent(
+              local,
+              situations,
+              timeZone: localTimeZone,
+            );
+            final created = await calendarApi.events.insert(
+              eventToInsert,
+              'primary',
+            );
+            final updatedLocal = local.copyWith(
+              googleEventId: created.id,
+              lastEditedTime: created.updated?.toLocal() ?? DateTime.now(),
+            );
+            if (created.id != null) processedGoogleIds.add(created.id!);
+            survivors.add(updatedLocal);
+            uploaded++;
+          } catch (insertErr) {
+            debugPrint('[GoogleSyncService] insert failed for "${local.title}": $insertErr');
+            survivors.add(local);
+          }
           continue;
         }
 
@@ -290,19 +320,75 @@ class GoogleSyncService {
         if (local.lastEditedTime.isAfter(
           remoteUpdated.add(const Duration(seconds: 2)),
         )) {
-          final eventToPatch = _scheduleToGoogleEvent(local, situations);
-          final patched = await calendarApi.events.patch(
-            eventToPatch,
-            'primary',
-            gid,
+          final eventPayload = _scheduleToGoogleEvent(
+            local,
+            situations,
+            timeZone: localTimeZone,
           );
-          survivors.add(
-            local.copyWith(
-              lastEditedTime:
-                  patched.updated?.toLocal() ?? local.lastEditedTime,
-            ),
-          );
-          uploaded++;
+          cal.Event updatedRemote;
+          try {
+            final isRecurringInstance = remote.recurringEventId != null &&
+                remote.recurringEventId!.isNotEmpty;
+
+            remote.summary = eventPayload.summary;
+            remote.colorId = eventPayload.colorId;
+            remote.start = eventPayload.start;
+            remote.end = eventPayload.end;
+            if (!isRecurringInstance) {
+              remote.recurrence = eventPayload.recurrence;
+            } else {
+              remote.recurrence = null;
+            }
+            remote.extendedProperties = eventPayload.extendedProperties;
+
+            updatedRemote = await calendarApi.events.update(
+              remote,
+              'primary',
+              gid,
+            );
+            survivors.add(
+              local.copyWith(
+                lastEditedTime:
+                    updatedRemote.updated?.toLocal() ?? local.lastEditedTime,
+              ),
+            );
+            uploaded++;
+          } catch (updateErr) {
+            debugPrint(
+              '[GoogleSyncService] update failed ($updateErr), trying patch for $gid ("${local.title}")',
+            );
+            try {
+              final isRecurringInstance = remote.recurringEventId != null &&
+                  remote.recurringEventId!.isNotEmpty;
+
+              final patchEvent = cal.Event(
+                summary: eventPayload.summary,
+                colorId: eventPayload.colorId,
+                start: eventPayload.start,
+                end: eventPayload.end,
+                recurrence: !isRecurringInstance ? eventPayload.recurrence : null,
+                extendedProperties: eventPayload.extendedProperties,
+              );
+
+              updatedRemote = await calendarApi.events.patch(
+                patchEvent,
+                'primary',
+                gid,
+              );
+              survivors.add(
+                local.copyWith(
+                  lastEditedTime:
+                      updatedRemote.updated?.toLocal() ?? local.lastEditedTime,
+                ),
+              );
+              uploaded++;
+            } catch (patchErr) {
+              debugPrint(
+                '[GoogleSyncService] patch also failed for $gid ("${local.title}"): $patchErr. Keeping local safe.',
+              );
+              survivors.add(local);
+            }
+          }
         } else if (remoteUpdated.isAfter(
           local.lastEditedTime.add(const Duration(seconds: 2)),
         )) {
@@ -504,11 +590,9 @@ class GoogleSyncService {
   // ===========================================================================
   cal.Event _scheduleToGoogleEvent(
     Schedule schedule,
-    List<Situation> situations,
-  ) {
-    final startDt = schedule.scheduledDateTimeOn(schedule.date);
-    final endDt = startDt.add(const Duration(hours: 1));
-
+    List<Situation> situations, {
+    String? timeZone,
+  }) {
     // 연결된 상황 색상 -> 구글 캘린더 colorId(1~11) 매핑
     String? googleColorId;
     if (schedule.situationName != null &&
@@ -529,34 +613,101 @@ class GoogleSyncService {
       if (schedule.tags.isNotEmpty) 'tags': jsonEncode(schedule.tags),
       if (schedule.prepMinutesBefore != null)
         'prepMinutesBefore': schedule.prepMinutesBefore.toString(),
+      'isAllDay': schedule.isAllDay.toString(),
     };
 
     final rrule = _scheduleToRRule(schedule);
 
+    // 1) 종일 일정인 경우 (All-day event)
+    // 구글 캘린더 API 규격: start.date = YYYY-MM-DD, end.date = YYYY-MM-DD (종료일 + 1일)
+    // dateTime과 timeZone은 전달하지 않아야 400 충돌 에러가 발생하지 않습니다.
+    if (schedule.isAllDay) {
+      final startDate = DateTime(
+        schedule.date.year,
+        schedule.date.month,
+        schedule.date.day,
+      );
+      final nextDay = startDate.add(const Duration(days: 1));
+
+      return cal.Event(
+        summary: schedule.title.trim().isEmpty ? '(일정)' : schedule.title.trim(),
+        colorId: googleColorId,
+        start: cal.EventDateTime(date: startDate),
+        end: cal.EventDateTime(date: nextDay),
+        recurrence: rrule != null ? <String>[rrule] : null,
+        extendedProperties: cal.EventExtendedProperties(private: privateProps),
+      );
+    }
+
+    // 2) 시간 지정 일정인 경우 (Timed event)
+    DateTime baseDate = schedule.date;
+    if (schedule.repeatType == ScheduleRepeatType.weekly &&
+        schedule.repeatWeekdays.isNotEmpty) {
+      if (!schedule.repeatWeekdays.contains(baseDate.weekday)) {
+        for (int offset = 1; offset <= 7; offset++) {
+          final nextD = baseDate.add(Duration(days: offset));
+          if (schedule.repeatWeekdays.contains(nextD.weekday)) {
+            baseDate = DateTime(nextD.year, nextD.month, nextD.day);
+            break;
+          }
+        }
+      }
+    }
+
+    final startDt = schedule.scheduledDateTimeOn(baseDate);
+    final endDt = startDt.add(const Duration(hours: 1));
+    final effectiveTz = timeZone ?? _cachedLocalTimeZone ?? 'Asia/Seoul';
+
     return cal.Event(
       summary: schedule.title.trim().isEmpty ? '(일정)' : schedule.title.trim(),
       colorId: googleColorId,
-      start: cal.EventDateTime(dateTime: startDt.toUtc()),
-      end: cal.EventDateTime(dateTime: endDt.toUtc()),
+      start: cal.EventDateTime(
+        dateTime: startDt,
+        timeZone: effectiveTz,
+      ),
+      end: cal.EventDateTime(
+        dateTime: endDt,
+        timeZone: effectiveTz,
+      ),
       recurrence: rrule != null ? <String>[rrule] : null,
       extendedProperties: cal.EventExtendedProperties(private: privateProps),
     );
   }
 
   Schedule _googleEventToSchedule(cal.Event event, {Schedule? existingLocal}) {
-    final startLocal =
-        (event.start?.dateTime ??
-                event.start?.date ??
-                existingLocal?.date ??
-                DateTime.now())
-            .toLocal();
-
-    final timeStr = event.start?.dateTime != null
-        ? '${startLocal.hour.toString().padLeft(2, '0')}:${startLocal.minute.toString().padLeft(2, '0')}'
-        : (existingLocal?.time ?? '09:00');
-
+    // 구글 캘린더에서 온 종일 일정 여부 판별 (start.date 존재 및 dateTime 없음)
+    final isGoogleAllDay =
+        event.start?.date != null && event.start?.dateTime == null;
     final privateProps =
         event.extendedProperties?.private ?? <String, String>{};
+
+    final isAllDay = isGoogleAllDay ||
+        (privateProps['isAllDay'] == 'true') ||
+        (existingLocal?.isAllDay ?? false);
+
+    DateTime eventDate;
+    if (isGoogleAllDay && event.start?.date != null) {
+      final d = event.start!.date!.toLocal();
+      eventDate = DateTime(d.year, d.month, d.day);
+    } else {
+      final startLocal = (event.start?.dateTime ??
+              event.start?.date ??
+              existingLocal?.date ??
+              DateTime.now())
+          .toLocal();
+      eventDate = DateTime(startLocal.year, startLocal.month, startLocal.day);
+    }
+
+    final String timeStr;
+    if (isAllDay) {
+      timeStr = existingLocal?.time ?? '00:00';
+    } else if (event.start?.dateTime != null) {
+      final startLocal = event.start!.dateTime!.toLocal();
+      timeStr =
+          '${startLocal.hour.toString().padLeft(2, '0')}:${startLocal.minute.toString().padLeft(2, '0')}';
+    } else {
+      timeStr = existingLocal?.time ?? '09:00';
+    }
 
     // 외부에서 생성된 일정이면 situationName 및 tags는 미지정(null / 빈 리스트) 유지
     String? situationName =
@@ -571,8 +722,8 @@ class GoogleSyncService {
       } catch (_) {}
     }
 
-    int? prepMins = existingLocal?.prepMinutesBefore;
-    if (privateProps['prepMinutesBefore'] != null) {
+    int? prepMins = isAllDay ? null : existingLocal?.prepMinutesBefore;
+    if (!isAllDay && privateProps['prepMinutesBefore'] != null) {
       prepMins = int.tryParse(privateProps['prepMinutesBefore']!);
     }
 
@@ -581,9 +732,10 @@ class GoogleSyncService {
           existingLocal?.id ??
           privateProps['bygoId'] ??
           'gcal_${event.id ?? DateTime.now().microsecondsSinceEpoch}',
-      date: DateTime(startLocal.year, startLocal.month, startLocal.day),
+      date: eventDate,
       title: event.summary ?? existingLocal?.title ?? '(제목 없음)',
       time: timeStr,
+      isAllDay: isAllDay,
       tags: tags,
       situationName: situationName,
       prepMinutesBefore: prepMins,

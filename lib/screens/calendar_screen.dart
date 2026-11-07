@@ -382,7 +382,9 @@ class _CalendarScreenState extends State<CalendarScreen> {
       text: (existing?.repeatCount ?? 10).toString(),
     );
 
-    String selectedTime = existing?.time ?? '09:00';
+    String? selectedTime = existing != null && existing.isAllDay
+        ? null
+        : (existing?.time ?? '09:00');
     String? selectedSituationName = existing?.situationName;
     final List<String> selectedTags = List<String>.from(existing?.tags ?? []);
     if (selectedTags.isEmpty &&
@@ -501,7 +503,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                       ),
                       const SizedBox(height: 12),
 
-                      // 3. 시작일 및 시간
+                      // 3. 시작일 및 시간 선택 (시간 미지정 시 종일 일정)
                       Row(
                         children: [
                           Expanded(
@@ -528,7 +530,8 @@ class _CalendarScreenState extends State<CalendarScreen> {
                             child: OutlinedButton.icon(
                               onPressed: () async {
                                 HapticFeedback.selectionClick();
-                                final parts = selectedTime.split(':');
+                                final parts =
+                                    (selectedTime ?? '09:00').split(':');
                                 final initial = TimeOfDay(
                                   hour: int.tryParse(parts[0]) ?? 9,
                                   minute: parts.length > 1
@@ -546,10 +549,28 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                   });
                                 }
                               },
-                              icon: const Icon(Icons.access_time, size: 16),
-                              label: Text('시간: $selectedTime'),
+                              icon: Icon(
+                                selectedTime == null
+                                    ? Icons.today
+                                    : Icons.access_time,
+                                size: 16,
+                              ),
+                              label: Text(
+                                selectedTime == null
+                                    ? '시간 미지정 (종일)'
+                                    : '시간: $selectedTime',
+                              ),
                             ),
                           ),
+                          if (selectedTime != null)
+                            IconButton(
+                              tooltip: '시간 지우기 (종일 일정으로 변경)',
+                              icon: const Icon(Icons.close, size: 18),
+                              onPressed: () => setDialogState(() {
+                                selectedTime = null;
+                                prepMinutesBefore = null;
+                              }),
+                            ),
                         ],
                       ),
                       const SizedBox(height: 14),
@@ -635,36 +656,38 @@ class _CalendarScreenState extends State<CalendarScreen> {
                       ),
                       const SizedBox(height: 14),
 
-                      // 5. 사전 준비시간 알림 설정
-                      const Text(
-                        '준비시간',
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      DropdownButtonFormField<int?>(
-                        initialValue: prepMinutesBefore,
-                        decoration: const InputDecoration(
-                          border: OutlineInputBorder(),
-                          contentPadding: EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 8,
+                      // 5. 사전 준비시간 알림 설정 (시간 지정 일정일 때만 노출)
+                      if (selectedTime != null) ...[
+                        const Text(
+                          '준비시간',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
                           ),
                         ),
-                        items: const [
-                          DropdownMenuItem(value: null, child: Text('설정 안 함')),
-                          DropdownMenuItem(value: 10, child: Text('10분 전')),
-                          DropdownMenuItem(value: 15, child: Text('15분 전')),
-                          DropdownMenuItem(value: 30, child: Text('30분 전')),
-                          DropdownMenuItem(value: 60, child: Text('1시간 전')),
-                          DropdownMenuItem(value: 120, child: Text('2시간 전')),
-                        ],
-                        onChanged: (val) =>
-                            setDialogState(() => prepMinutesBefore = val),
-                      ),
-                      const SizedBox(height: 14),
+                        const SizedBox(height: 6),
+                        DropdownButtonFormField<int?>(
+                          initialValue: prepMinutesBefore,
+                          decoration: const InputDecoration(
+                            border: OutlineInputBorder(),
+                            contentPadding: EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 8,
+                            ),
+                          ),
+                          items: const [
+                            DropdownMenuItem(value: null, child: Text('설정 안 함')),
+                            DropdownMenuItem(value: 10, child: Text('10분 전')),
+                            DropdownMenuItem(value: 15, child: Text('15분 전')),
+                            DropdownMenuItem(value: 30, child: Text('30분 전')),
+                            DropdownMenuItem(value: 60, child: Text('1시간 전')),
+                            DropdownMenuItem(value: 120, child: Text('2시간 전')),
+                          ],
+                          onChanged: (val) =>
+                              setDialogState(() => prepMinutesBefore = val),
+                        ),
+                        const SizedBox(height: 14),
+                      ],
 
                       // 6. 반복 설정 (n일/주/개월/년 + 요일 + 종료 조건)
                       const Text(
@@ -862,12 +885,18 @@ class _CalendarScreenState extends State<CalendarScreen> {
 
                     HapticFeedback.mediumImpact();
 
+                    final isAllDay = selectedTime == null;
+                    final effectiveTime =
+                        selectedTime ?? (existing?.time ?? '00:00');
+                    final effectivePrep =
+                        isAllDay ? null : prepMinutesBefore;
+
                     if (existing == null) {
                       final created = Schedule(
                         id: DateTime.now().microsecondsSinceEpoch.toString(),
                         date: startDate,
                         title: title,
-                        time: selectedTime,
+                        time: effectiveTime,
                         tags: selectedTags,
                         situationName: selectedSituationName,
                         repeatType: repeatType,
@@ -875,7 +904,8 @@ class _CalendarScreenState extends State<CalendarScreen> {
                         repeatWeekdays: finalWeekdays,
                         repeatEndDate: finalEndDate,
                         repeatCount: parsedCount,
-                        prepMinutesBefore: prepMinutesBefore,
+                        prepMinutesBefore: effectivePrep,
+                        isAllDay: isAllDay,
                         lastEditedTime: DateTime.now(),
                       );
                       widget.schedules.add(created);
@@ -888,7 +918,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                     if (!existing.isRepeating) {
                       existing.date = startDate;
                       existing.title = title;
-                      existing.time = selectedTime;
+                      existing.time = effectiveTime;
                       existing.tags = List<String>.from(selectedTags);
                       existing.situationName = selectedSituationName;
                       existing.repeatType = repeatType;
@@ -896,7 +926,8 @@ class _CalendarScreenState extends State<CalendarScreen> {
                       existing.repeatWeekdays = finalWeekdays;
                       existing.repeatEndDate = finalEndDate;
                       existing.repeatCount = parsedCount;
-                      existing.prepMinutesBefore = prepMinutesBefore;
+                      existing.prepMinutesBefore = effectivePrep;
+                      existing.isAllDay = isAllDay;
                       existing.markUpdated();
                       widget.onScheduleSavedOrUpdated?.call(existing);
                       _notifySchedules();
@@ -944,11 +975,12 @@ class _CalendarScreenState extends State<CalendarScreen> {
                         id: DateTime.now().microsecondsSinceEpoch.toString(),
                         date: _selectedDay,
                         title: title,
-                        time: selectedTime,
+                        time: effectiveTime,
                         tags: selectedTags,
                         situationName: selectedSituationName,
                         repeatType: ScheduleRepeatType.none,
-                        prepMinutesBefore: prepMinutesBefore,
+                        prepMinutesBefore: effectivePrep,
+                        isAllDay: isAllDay,
                         lastEditedTime: DateTime.now(),
                       );
                       widget.schedules.add(single);
@@ -967,7 +999,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                         id: DateTime.now().microsecondsSinceEpoch.toString(),
                         date: _selectedDay,
                         title: title,
-                        time: selectedTime,
+                        time: effectiveTime,
                         tags: selectedTags,
                         situationName: selectedSituationName,
                         repeatType: repeatType,
@@ -975,7 +1007,8 @@ class _CalendarScreenState extends State<CalendarScreen> {
                         repeatWeekdays: finalWeekdays,
                         repeatEndDate: finalEndDate,
                         repeatCount: parsedCount,
-                        prepMinutesBefore: prepMinutesBefore,
+                        prepMinutesBefore: effectivePrep,
+                        isAllDay: isAllDay,
                         lastEditedTime: DateTime.now(),
                       );
                       widget.schedules.add(split);
@@ -983,7 +1016,7 @@ class _CalendarScreenState extends State<CalendarScreen> {
                     } else {
                       existing.date = startDate;
                       existing.title = title;
-                      existing.time = selectedTime;
+                      existing.time = effectiveTime;
                       existing.tags = List<String>.from(selectedTags);
                       existing.situationName = selectedSituationName;
                       existing.repeatType = repeatType;
@@ -991,7 +1024,8 @@ class _CalendarScreenState extends State<CalendarScreen> {
                       existing.repeatWeekdays = finalWeekdays;
                       existing.repeatEndDate = finalEndDate;
                       existing.repeatCount = parsedCount;
-                      existing.prepMinutesBefore = prepMinutesBefore;
+                      existing.prepMinutesBefore = effectivePrep;
+                      existing.isAllDay = isAllDay;
                       existing.markUpdated();
                       widget.onScheduleSavedOrUpdated?.call(existing);
                     }
@@ -1814,12 +1848,23 @@ class _CalendarScreenState extends State<CalendarScreen> {
                                                       mainAxisSize:
                                                           MainAxisSize.min,
                                                       children: [
-                                                        const Icon(
-                                                            Icons.access_time,
+                                                        Icon(
+                                                            sc.isAllDay
+                                                                ? Icons.today
+                                                                : Icons.access_time,
                                                             size: 14),
                                                         const SizedBox(
                                                             width: 3),
-                                                        Text(sc.time),
+                                                        Text(
+                                                          sc.isAllDay
+                                                              ? '종일'
+                                                              : sc.time,
+                                                          style: TextStyle(
+                                                            fontWeight: sc.isAllDay
+                                                                ? FontWeight.bold
+                                                                : FontWeight.normal,
+                                                          ),
+                                                        ),
                                                       ],
                                                     ),
                                                     if (sc.isRepeating)

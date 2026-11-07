@@ -338,3 +338,64 @@
 
 ### 3. 검증 결과
 - `flutter analyze` 0 issues (No issues found!).
+
+---
+
+## 2026-11-07: 구글 캘린더 동기화 400 에러 해결 및 종일 일정(All-day) 연동 기능 구현
+
+- **작성일**: 2026-11-07
+- **작업자**: Antigravity AI Assistant & Developer
+- **관련 커밋**: `fix(calendar): 구글 캘린더 동기화 400 에러 해결 및 종일 일정(All-day) 연동 지원`
+
+### 1. 배경 및 문제 원인 분석
+
+Google Calendar API v3 양방향 동기화(`syncSchedules`) 실행 시 다음과 같은 연쇄적인 `400 Bad Request` 에러가 발생하여 동기화 전체가 중단되는 현상이 있었습니다:
+
+1. **종일 일정(All-day event)과 시간 지정 일정의 필드 충돌 (`Invalid start time.`)**:
+   - 구글 캘린더의 생일, 공휴일, 기념일 등은 `start.date: "YYYY-MM-DD"` 형태의 종일 일정입니다.
+   - 기존 앱에는 종일 일정 개념이 없어 구글에서 가져올 때 임의의 기본 시간(`09:00`)으로 변환되었고, 다시 구글로 `patch`/`update`할 때 `dateTime`만 전송되면서 원격에 남아있던 `date` 필드와 충돌하여 `400 Invalid start time.`이 발생했습니다.
+2. **반복 일정(RRULE)의 필수 IANA 타임존 누락 (`Missing time zone definition for start time.`)**:
+   - "생일 축하합니다!"와 같이 매년 반복(`RRULE:FREQ=YEARLY`)되는 일정을 업데이트할 때, `cal.EventDateTime`의 `timeZone` 필드가 비어 있어 구글 서버에서 거부되었습니다.
+3. **UTC 변환으로 인한 요일 역전 및 RRULE BYDAY 불일치**:
+   - 한국 표준시(KST, UTC+9) 오전 일정을 `.toUtc()` 변환 시 전날 밤(UTC)으로 날짜/요일이 밀리면서, 주간 반복의 `BYDAY` 요일과 `DTSTART`의 요일이 불일치하여 400 에러가 유발되었습니다.
+4. **단일 특수 일정의 에러가 전체 동기화를 중단시키는 구조**:
+   - 수백 개의 일정 중 단 1개의 읽기 전용/시스템 일정(연락처 연동 생일 등)에서 400 에러가 나더라도 전체 동기화가 `rethrow`로 즉시 실패하는 구조적 취약점이 있었습니다.
+
+---
+
+### 2. 주요 개선 및 구현 내용
+
+#### 2.1. 데이터 모델 확장 (`lib/models/schedule_model.dart`)
+- `bool isAllDay` 필드 추가 (기본값 `false`).
+- `Schedule.toJson()`, `Schedule.fromJson()`, `Schedule.copyWith()`에 완전 반영.
+- 준비시간 알림 게터(`hasPrepTime`)를 `!isAllDay && prepMinutesBefore != null && prepMinutesBefore! > 0`로 보정하여, 종일 일정은 외출 준비시간 알림 대상에서 안전하게 제외.
+
+#### 2.2. 일정 추가/수정 UI 및 UX 일관성 확보 (`lib/screens/calendar_screen.dart`)
+- **투두(할 일) 화면과 동일한 UX 패턴 적용**:
+  - 별도의 번거로운 토글 스위치 대신, 시간 버튼 우측에 `x` (지우기) 버튼을 배치.
+  - `x` 버튼 클릭 시 시간이 지워지며 **`시간 미지정 (종일)`**로 즉시 전환.
+  - 시간 미지정 상태에서는 외출 준비시간 알림 드롭다운이 자동으로 숨김 처리.
+  - 다시 시간 버튼을 누르고 TimePicker로 시간을 선택하면 일반 시간 일정으로 복귀.
+- **캘린더 목록 뷰 표시 개선**:
+  - 종일 일정은 `09:00` 시간 대신 달력 아이콘과 함께 **`종일`** 굵은 뱃지로 깔끔하게 표시.
+- 신규 등록, 단일 일정 수정, 반복 일정의 개별/전체 수정 등 모든 저장 분기에 `isAllDay` 및 시간 미지정 상태가 누락 없이 적용되도록 처리.
+
+#### 2.3. 구글 캘린더 동기화 서비스 전면 개편 (`lib/services/google_sync_service.dart`)
+- **종일 일정(All-day) 1:1 양방향 매핑**:
+  - 구글 캘린더에서 `event.start?.date != null && event.start?.dateTime == null`인 일정을 가져올 때 `isAllDay = true`로 정확히 인식.
+  - 앱에서 구글로 전송 시 `schedule.isAllDay`인 경우 표준 RFC 5545 규격에 맞춰 `date` 필드(`DateTime` 객체)를 전달(종료일은 +1일)하여 `date`와 `dateTime` 충돌 원천 차단.
+- **단말기 IANA 타임존 자동 감지 및 적용**:
+  - `FlutterTimezone.getLocalTimezone()`을 활용한 비동기 타임존 조회 및 캐싱(`_getLocalTimeZone`).
+  - 시간 지정 일정 전송 시 `start.timeZone` 및 `end.timeZone`에 `'Asia/Seoul'` 등 유효한 IANA 타임존을 명시하여 `Missing time zone definition` 에러 해결.
+- **개별 일정 단위 오류 격리 방어막 구축**:
+  - 특정 시스템/읽기 전용 일정에서 `update` 또는 `patch` 호출 시 400/403/404 예외가 발생하더라도, 해당 일정을 로그로 기록하고 로컬 일정을 안전하게 보존(`survivors.add(local)`)한 뒤 다음 일정 동기화를 정상 진행하도록 격리 처리.
+
+---
+
+### 3. 검증 결과 및 영향도
+
+1. **구글 캘린더 동기화**:
+   - 반복 생일 일정 및 종일 일정이 포함된 계정에서도 `400 Bad Request` 없이 양방향 업로드/다운로드 정상 완료.
+2. **앱 사용성 및 일관성**:
+   - 할 일 화면과 캘린더 화면의 '시간 미지정 = 종일' 인터랙션이 통일되어 직관성 향상.
+   - 종일 일정 등록 시 불필요한 외출 준비 알림 계산이 배제되어 안정성 강화.

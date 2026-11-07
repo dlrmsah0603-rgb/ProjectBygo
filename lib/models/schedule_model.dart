@@ -44,6 +44,7 @@ class Schedule {
   List<String> excludedDates; // 예외(삭제/분리) 처리된 날짜 목록 ('yyyy-MM-dd')
 
   int? prepMinutesBefore; // 사전 준비시간(분)
+  bool isAllDay; // 종일 일정 여부
   bool isAutoRecord; // 체크리스트 100% 완료 시 자동 생성된 기록 일정 여부
 
   // --- 구글 캘린더 양방향 동기화 필드 ---
@@ -66,6 +67,7 @@ class Schedule {
     this.repeatCount,
     List<String>? excludedDates,
     this.prepMinutesBefore,
+    this.isAllDay = false,
     this.isAutoRecord = false,
     this.googleEventId,
     DateTime? lastEditedTime,
@@ -109,7 +111,8 @@ class Schedule {
   bool get isRepeating =>
       repeatType != ScheduleRepeatType.none || repeatWeekdays.isNotEmpty;
 
-  bool get hasPrepTime => prepMinutesBefore != null && prepMinutesBefore! > 0;
+  bool get hasPrepTime =>
+      !isAllDay && prepMinutesBefore != null && prepMinutesBefore! > 0;
 
   void markUpdated() {
     lastEditedTime = DateTime.now();
@@ -148,6 +151,7 @@ class Schedule {
     int? prepMinutesBefore,
     bool clearPrepMinutes = false,
     bool clearPrepMinutesBefore = false,
+    bool? isAllDay,
     bool? isAutoRecord,
     String? googleEventId,
     bool clearGoogleEventId = false,
@@ -185,6 +189,7 @@ class Schedule {
       prepMinutesBefore: (clearPrepMinutes || clearPrepMinutesBefore)
           ? null
           : (prepMinutesBefore ?? this.prepMinutesBefore),
+      isAllDay: isAllDay ?? this.isAllDay,
       isAutoRecord: isAutoRecord ?? this.isAutoRecord,
       googleEventId:
           clearGoogleEventId ? null : (googleEventId ?? this.googleEventId),
@@ -449,6 +454,7 @@ class Schedule {
         'repeatCount': repeatCount,
         'excludedDates': excludedDates,
         'prepMinutesBefore': prepMinutesBefore,
+        'isAllDay': isAllDay,
         'isAutoRecord': isAutoRecord,
         'googleEventId': googleEventId,
         'lastEditedTime': lastEditedTime.toIso8601String(),
@@ -516,6 +522,7 @@ class Schedule {
           .map((e) => e.toString())
           .toList(),
       prepMinutesBefore: (json['prepMinutesBefore'] as num?)?.toInt(),
+      isAllDay: (json['isAllDay'] as bool?) ?? false,
       isAutoRecord: (json['isAutoRecord'] as bool?) ?? false,
       googleEventId: json['googleEventId'] as String?,
       lastEditedTime: json['lastEditedTime'] != null
